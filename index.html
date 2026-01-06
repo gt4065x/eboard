@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실시간 협업 디지털 칠판</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        input[type='range'] {
+            writing-mode: bt-lr; /* IE/Edge */
+            -webkit-appearance: slider-vertical; /* WebKit */
+            width: 8px;
+            height: 100px;
+            padding: 0 5px;
+        }
+        canvas {
+            touch-action: none; /* 터치 스크롤 방지 */
+        }
+    </style>
+</head>
+<body class="bg-slate-100 overflow-hidden font-sans">
+
+    <div id="app" class="flex flex-col h-screen">
+        <!-- Loading Overlay -->
+        <div id="loading" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+            <div class="text-center p-8">
+                <div class="animate-spin mb-4 inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
+                <p class="text-slate-600 font-medium">칠판 접속 중...</p>
+            </div>
+        </div>
+
+        <!-- Header -->
+        <header class="bg-white border-b px-6 py-3 flex justify-between items-center shadow-sm z-10">
+            <div class="flex items-center space-x-3">
+                <div class="bg-blue-600 p-2 rounded-lg text-white">
+                    <i data-lucide="palette" class="w-5 h-5"></i>
+                </div>
+                <h1 class="text-xl font-bold text-slate-800">디지털 협업 칠판 (HTML)</h1>
+            </div>
+            
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center bg-slate-100 px-3 py-1.5 rounded-full text-sm text-slate-600">
+                    <i data-lucide="users" class="w-4 h-4 mr-2"></i>
+                    <span>실시간 협업 중</span>
+                </div>
+                <div class="flex items-center text-xs text-slate-400">
+                    <i data-lucide="user" class="w-3 h-3 mr-1"></i>
+                    <span id="user-id">Connecting...</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="flex flex-1 relative overflow-hidden">
+            <!-- Toolbar -->
+            <aside class="absolute left-4 top-1/2 -translate-y-1/2 bg-white p-3 rounded-2xl shadow-xl flex flex-col space-y-4 z-20 border border-slate-200">
+                <div class="space-y-2">
+                    <button id="btn-pencil" class="p-3 rounded-xl transition-all bg-blue-100 text-blue-600 shadow-inner" title="연필">
+                        <i data-lucide="pencil" class="w-6 h-6"></i>
+                    </button>
+                    <button id="btn-eraser" class="p-3 rounded-xl transition-all hover:bg-slate-100 text-slate-400" title="지우개">
+                        <i data-lucide="eraser" class="w-6 h-6"></i>
+                    </button>
+                </div>
+
+                <div class="h-px bg-slate-100 mx-1"></div>
+
+                <!-- Color Presets -->
+                <div id="color-grid" class="grid grid-cols-2 gap-2">
+                    <button data-color="#3b82f6" class="w-6 h-6 rounded-full border-2 border-slate-800 scale-110" style="background-color: #3b82f6"></button>
+                    <button data-color="#ef4444" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #ef4444"></button>
+                    <button data-color="#10b981" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #10b981"></button>
+                    <button data-color="#f59e0b" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #f59e0b"></button>
+                    <button data-color="#8b5cf6" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #8b5cf6"></button>
+                    <button data-color="#000000" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #000000"></button>
+                </div>
+
+                <div class="h-px bg-slate-100 mx-1"></div>
+
+                <!-- Brush Size Slider -->
+                <div class="flex flex-col items-center space-y-2 py-2">
+                    <div class="text-[10px] font-bold text-slate-400 uppercase">Size</div>
+                    <input id="brush-size" type="range" min="1" max="20" value="5" class="cursor-pointer accent-blue-600">
+                    <span id="size-display" class="text-xs font-bold text-slate-600">5</span>
+                </div>
+
+                <div class="h-px bg-slate-100 mx-1"></div>
+
+                <button id="btn-clear" class="p-3 rounded-xl text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors" title="전체 삭제">
+                    <i data-lucide="trash-2" class="w-6 h-6"></i>
+                </button>
+            </aside>
+
+            <!-- Canvas Area -->
+            <main class="flex-1 relative cursor-crosshair touch-none bg-white overflow-hidden shadow-inner m-4 rounded-2xl border border-slate-200">
+                <canvas id="whiteboard" class="w-full h-full block"></canvas>
+                
+                <div class="absolute bottom-6 right-6 bg-white/80 backdrop-blur-md px-4 py-2 rounded-lg border border-slate-200 shadow-sm pointer-events-none">
+                    <div class="flex items-center space-x-2 text-xs text-slate-500 font-medium">
+                        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                        <span id="status-text">동기화 활성화됨 (0 획)</span>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, doc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // 1. Firebase Configuration
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'whiteboard-html-default';
+
+        // 2. State & Elements
+        const canvas = document.getElementById('whiteboard');
+        const ctx = canvas.getContext('2d');
+        const loadingOverlay = document.getElementById('loading');
+        const userIdDisplay = document.getElementById('user-id');
+        const statusText = document.getElementById('status-text');
+        
+        const btnPencil = document.getElementById('btn-pencil');
+        const btnEraser = document.getElementById('btn-eraser');
+        const btnClear = document.getElementById('btn-clear');
+        const colorButtons = document.querySelectorAll('#color-grid button');
+        const brushSlider = document.getElementById('brush-size');
+        const sizeDisplay = document.getElementById('size-display');
+
+        let user = null;
+        let strokes = [];
+        let isDrawing = false;
+        let currentPath = [];
+        let tool = 'pencil';
+        let color = '#3b82f6';
+        let brushSize = 5;
+
+        // 3. Auth Initialization (Rule 3)
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth Error:", error);
+            }
+        }
+
+        onAuthStateChanged(auth, (currUser) => {
+            if (currUser) {
+                user = currUser;
+                userIdDisplay.textContent = user.uid.substring(0, 8) + '...';
+                loadingOverlay.classList.add('hidden');
+                initSync();
+            }
+        });
+
+        // 4. Firestore Real-time Sync (Rule 1 & 2)
+        function initSync() {
+            if (!user) return;
+            const strokesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'strokes');
+            
+            // onSnapshot with error callback
+            onSnapshot(strokesCollection, (snapshot) => {
+                strokes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                statusText.textContent = `동기화 활성화됨 (${strokes.length} 획)`;
+                redrawCanvas();
+            }, (error) => {
+                console.error("Firestore sync error:", error);
+            });
+        }
+
+        // 5. Canvas Logic
+        function resizeCanvas() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.scale(dpr, dpr);
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            redrawCanvas();
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('load', () => {
+            lucide.createIcons();
+            resizeCanvas();
+            initAuth();
+        });
+
+        function redrawCanvas() {
+            const rect = canvas.getBoundingClientRect();
+            ctx.clearRect(0, 0, rect.width, rect.height);
+
+            strokes.forEach(stroke => {
+                if (!stroke.points || stroke.points.length < 2) return;
+                ctx.beginPath();
+                ctx.strokeStyle = stroke.color;
+                ctx.lineWidth = stroke.width;
+                ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+                for (let i = 1; i < stroke.points.length; i++) {
+                    ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+                }
+                ctx.stroke();
+            });
+        }
+
+        // 6. Interaction Logic
+        function getCoords(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {
+                x: clientX - rect.left,
+                y: clientY - rect.top
+            };
+        }
+
+        function startDrawing(e) {
+            isDrawing = true;
+            const { x, y } = getCoords(e);
+            currentPath = [{ x, y }];
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            const { x, y } = getCoords(e);
+            
+            ctx.lineWidth = brushSize;
+            ctx.strokeStyle = tool === 'eraser' ? '#ffffff' : color;
+            ctx.lineTo(x, y);
+            ctx.stroke();
+            
+            currentPath.push({ x, y });
+        }
+
+        async function stopDrawing() {
+            if (!isDrawing) return;
+            isDrawing = false;
+            
+            if (currentPath.length > 1 && user) {
+                try {
+                    const strokesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'strokes');
+                    await addDoc(strokesCollection, {
+                        points: currentPath,
+                        color: tool === 'eraser' ? '#ffffff' : color,
+                        width: brushSize,
+                        userId: user.uid,
+                        createdAt: Date.now()
+                    });
+                } catch (err) {
+                    console.error("Error saving stroke:", err);
+                }
+            }
+            currentPath = [];
+        }
+
+        // 7. Event Listeners
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        window.addEventListener('mouseup', stopDrawing);
+
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDrawing(e); }, { passive: false });
+        canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); }, { passive: false });
+        canvas.addEventListener('touchend', stopDrawing);
+
+        // UI Controls
+        btnPencil.addEventListener('click', () => {
+            tool = 'pencil';
+            btnPencil.classList.add('bg-blue-100', 'text-blue-600', 'shadow-inner');
+            btnPencil.classList.remove('hover:bg-slate-100', 'text-slate-400');
+            btnEraser.classList.remove('bg-blue-100', 'text-blue-600', 'shadow-inner');
+            btnEraser.classList.add('hover:bg-slate-100', 'text-slate-400');
+        });
+
+        btnEraser.addEventListener('click', () => {
+            tool = 'eraser';
+            btnEraser.classList.add('bg-blue-100', 'text-blue-600', 'shadow-inner');
+            btnEraser.classList.remove('hover:bg-slate-100', 'text-slate-400');
+            btnPencil.classList.remove('bg-blue-100', 'text-blue-600', 'shadow-inner');
+            btnPencil.classList.add('hover:bg-slate-100', 'text-slate-400');
+        });
+
+        colorButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                color = btn.getAttribute('data-color');
+                tool = 'pencil';
+                colorButtons.forEach(b => b.classList.remove('border-slate-800', 'scale-110'));
+                btn.classList.add('border-slate-800', 'scale-110');
+                // Auto switch to pencil tool UI
+                btnPencil.click();
+            });
+        });
+
+        brushSlider.addEventListener('input', (e) => {
+            brushSize = parseInt(e.target.value);
+            sizeDisplay.textContent = brushSize;
+        });
+
+        btnClear.addEventListener('click', async () => {
+            if (!confirm("정말로 모든 내용을 삭제하시겠습니까?")) return;
+            try {
+                const strokesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'strokes');
+                const snapshot = await getDocs(strokesCollection);
+                const batch = writeBatch(db);
+                snapshot.docs.forEach(d => batch.delete(d.ref));
+                await batch.commit();
+            } catch (err) {
+                console.error("Error clearing canvas:", err);
+            }
+        });
+    </script>
+</body>
+</html>
