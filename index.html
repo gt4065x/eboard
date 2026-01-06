@@ -22,7 +22,7 @@
 <body class="bg-slate-100 overflow-hidden font-sans">
 
     <div id="app" class="flex flex-col h-screen">
-        <!-- Loading Overlay -->
+        <!-- 로딩 화면 -->
         <div id="loading" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
             <div class="text-center p-8">
                 <div class="animate-spin mb-4 inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
@@ -30,13 +30,13 @@
             </div>
         </div>
 
-        <!-- Header -->
+        <!-- 헤더 -->
         <header class="bg-white border-b px-6 py-3 flex justify-between items-center shadow-sm z-10">
             <div class="flex items-center space-x-3">
                 <div class="bg-blue-600 p-2 rounded-lg text-white">
                     <i data-lucide="palette" class="w-5 h-5"></i>
                 </div>
-                <h1 class="text-xl font-bold text-slate-800">디지털 협업 칠판 (HTML)</h1>
+                <h1 class="text-xl font-bold text-slate-800">디지털 협업 칠판</h1>
             </div>
             
             <div class="flex items-center space-x-4">
@@ -46,13 +46,13 @@
                 </div>
                 <div class="flex items-center text-xs text-slate-400">
                     <i data-lucide="user" class="w-3 h-3 mr-1"></i>
-                    <span id="user-id">Connecting...</span>
+                    <span id="user-id">연결 중...</span>
                 </div>
             </div>
         </header>
 
         <div class="flex flex-1 relative overflow-hidden">
-            <!-- Toolbar -->
+            <!-- 도구 모음 -->
             <aside class="absolute left-4 top-1/2 -translate-y-1/2 bg-white p-3 rounded-2xl shadow-xl flex flex-col space-y-4 z-20 border border-slate-200">
                 <div class="space-y-2">
                     <button id="btn-pencil" class="p-3 rounded-xl transition-all bg-blue-100 text-blue-600 shadow-inner" title="연필">
@@ -65,7 +65,7 @@
 
                 <div class="h-px bg-slate-100 mx-1"></div>
 
-                <!-- Color Presets -->
+                <!-- 색상 선택 -->
                 <div id="color-grid" class="grid grid-cols-2 gap-2">
                     <button data-color="#3b82f6" class="w-6 h-6 rounded-full border-2 border-slate-800 scale-110" style="background-color: #3b82f6"></button>
                     <button data-color="#ef4444" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #ef4444"></button>
@@ -77,7 +77,7 @@
 
                 <div class="h-px bg-slate-100 mx-1"></div>
 
-                <!-- Brush Size Slider -->
+                <!-- 브러시 크기 -->
                 <div class="flex flex-col items-center space-y-2 py-2">
                     <div class="text-[10px] font-bold text-slate-400 uppercase">Size</div>
                     <input id="brush-size" type="range" min="1" max="20" value="5" class="cursor-pointer accent-blue-600">
@@ -91,7 +91,7 @@
                 </button>
             </aside>
 
-            <!-- Canvas Area -->
+            <!-- 칠판 영역 -->
             <main class="flex-1 relative cursor-crosshair touch-none bg-white overflow-hidden shadow-inner m-4 rounded-2xl border border-slate-200">
                 <canvas id="whiteboard" class="w-full h-full block"></canvas>
                 
@@ -111,14 +111,24 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, doc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 1. Firebase Configuration
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // 1. Firebase Configuration (제공해주신 API Key 적용)
+        const firebaseConfig = {
+            apiKey: "AIzaSyBjej7dpiro38Dp8UEA5TAB-yVmXbNTx1Y",
+            authDomain: "eboard-7849c.firebaseapp.com",
+            databaseURL: "https://eboard-7849c-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "eboard-7849c",
+            storageBucket: "eboard-7849c.firebasestorage.app",
+            messagingSenderId: "458693602522",
+            appId: "1:458693602522:web:e539ece79c690de9c289e3",
+            measurementId: "G-BLBBRP8XPN"
+        };
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'whiteboard-html-default';
 
-        // 2. State & Elements
+        // 2. 상태 및 엘리먼트
         const canvas = document.getElementById('whiteboard');
         const ctx = canvas.getContext('2d');
         const loadingOverlay = document.getElementById('loading');
@@ -140,7 +150,7 @@
         let color = '#3b82f6';
         let brushSize = 5;
 
-        // 3. Auth Initialization (Rule 3)
+        // 3. 인증 초기화
         async function initAuth() {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -149,7 +159,7 @@
                     await signInAnonymously(auth);
                 }
             } catch (error) {
-                console.error("Auth Error:", error);
+                console.error("인증 에러:", error);
             }
         }
 
@@ -162,22 +172,21 @@
             }
         });
 
-        // 4. Firestore Real-time Sync (Rule 1 & 2)
+        // 4. 실시간 Firestore 동기화
         function initSync() {
             if (!user) return;
             const strokesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'strokes');
             
-            // onSnapshot with error callback
             onSnapshot(strokesCollection, (snapshot) => {
                 strokes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 statusText.textContent = `동기화 활성화됨 (${strokes.length} 획)`;
                 redrawCanvas();
             }, (error) => {
-                console.error("Firestore sync error:", error);
+                console.error("Firestore 동기화 에러:", error);
             });
         }
 
-        // 5. Canvas Logic
+        // 5. 캔버스 로직
         function resizeCanvas() {
             const rect = canvas.parentElement.getBoundingClientRect();
             const dpr = window.devicePixelRatio || 1;
@@ -213,7 +222,7 @@
             });
         }
 
-        // 6. Interaction Logic
+        // 6. 그리기 로직
         function getCoords(e) {
             const rect = canvas.getBoundingClientRect();
             const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -259,13 +268,13 @@
                         createdAt: Date.now()
                     });
                 } catch (err) {
-                    console.error("Error saving stroke:", err);
+                    console.error("데이터 저장 실패:", err);
                 }
             }
             currentPath = [];
         }
 
-        // 7. Event Listeners
+        // 7. 이벤트 리스너
         canvas.addEventListener('mousedown', startDrawing);
         canvas.addEventListener('mousemove', draw);
         window.addEventListener('mouseup', stopDrawing);
@@ -274,7 +283,7 @@
         canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); }, { passive: false });
         canvas.addEventListener('touchend', stopDrawing);
 
-        // UI Controls
+        // UI 컨트롤
         btnPencil.addEventListener('click', () => {
             tool = 'pencil';
             btnPencil.classList.add('bg-blue-100', 'text-blue-600', 'shadow-inner');
@@ -297,7 +306,6 @@
                 tool = 'pencil';
                 colorButtons.forEach(b => b.classList.remove('border-slate-800', 'scale-110'));
                 btn.classList.add('border-slate-800', 'scale-110');
-                // Auto switch to pencil tool UI
                 btnPencil.click();
             });
         });
@@ -316,7 +324,7 @@
                 snapshot.docs.forEach(d => batch.delete(d.ref));
                 await batch.commit();
             } catch (err) {
-                console.error("Error clearing canvas:", err);
+                console.error("전체 삭제 에러:", err);
             }
         });
     </script>
