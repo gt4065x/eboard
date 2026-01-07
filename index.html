@@ -39,7 +39,7 @@
       outline: none;
       padding: 6px 8px;
       font-family: sans-serif;
-      z-index: 50;
+      z-index: 60;
       border-radius: 10px;
       touch-action: auto;
       pointer-events: auto;
@@ -68,13 +68,13 @@
       measurementId: "G-BCPK0YX0E3"
     };
 
-    const globalAppId = typeof __app_id !== "undefined" ? __app_id : "vibe-board-lobby";
+    // ✅ 로비는 모든 사용자에게 "항상 동일한 경로"로 고정
+    const LOBBY_ID = "eboard-lobby-v1";
 
     if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
     const db = firebase.firestore();
     const serverTimestamp = () => firebase.firestore.FieldValue.serverTimestamp();
-
     const col = (...segs) => db.collection(segs.join("/"));
     const docRef = (...segs) => db.doc(segs.join("/"));
 
@@ -161,13 +161,13 @@
       const containerRef = useRef(null);
       const textRef = useRef(null);
 
-      // states for gesture
+      // gesture state
       const drawing = useRef({ isDrawing: false, points: [] });
       const draggingText = useRef({ active: false, id: null, offsetX: 0, offsetY: 0 });
       const dragGhost = useRef({ active: false, id: null, x: null, y: null });
 
       const marquee = useRef({ down: false, startX: 0, startY: 0, started: false });
-      const downPosPx = useRef({ x: 0, y: 0 }); // for threshold
+      const downPosPx = useRef({ x: 0, y: 0 });
 
       // prevent double submit (Enter + blur)
       const submittingText = useRef(false);
@@ -175,7 +175,7 @@
       // text bounds for hit test / selection
       const textBoundsRef = useRef(new Map()); // id -> {x1,y1,x2,y2,page}
 
-      // --- Auth & Lobby ---
+      // 1) Auth
       useEffect(() => {
         const initAuth = async () => {
           try {
@@ -189,56 +189,20 @@
           }
         };
         initAuth();
-
         const unsubAuth = auth.onAuthStateChanged((u) => setUser(u));
+        return () => unsubAuth();
+      }, []);
 
-        const unsubLobby = col("artifacts", globalAppId, "public", "data", "active_rooms")
+      // ✅ 2) Lobby Listener: "고정 로비"로 조회
+      useEffect(() => {
+        const unsubLobby = col("artifacts", LOBBY_ID, "public", "data", "active_rooms")
           .onSnapshot((s) => {
             const rooms = s.docs.map((d) => ({ id: d.id, ...d.data() }));
             rooms.sort((a, b) => (b.lastActivity?.toMillis?.() || 0) - (a.lastActivity?.toMillis?.() || 0));
             setActiveRooms(rooms);
           }, (err) => console.error("Lobby onSnapshot error:", err));
-
-        return () => { unsubAuth(); unsubLobby(); };
+        return () => unsubLobby();
       }, []);
-
-      // --- Room Sync ---
-      useEffect(() => {
-        if (!user || !isLoggedIn || !roomInfo.id) return;
-
-        const base = ["artifacts", roomInfo.id, "public", "data"];
-        const sortByTime = (docs) =>
-          [...docs].sort((a, b) => (a.timestamp?.toMillis?.() || 0) - (b.timestamp?.toMillis?.() || 0));
-
-        const unsubStrokes = col(...base, "strokes").onSnapshot((s) => {
-          setData((p) => ({ ...p, strokes: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        }, (err) => console.error("strokes snapshot error:", err));
-
-        const unsubTexts = col(...base, "texts").onSnapshot((s) => {
-          setData((p) => ({ ...p, texts: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        }, (err) => console.error("texts snapshot error:", err));
-
-        const unsubMessages = col(...base, "messages").onSnapshot((s) => {
-          setData((p) => ({ ...p, messages: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        }, (err) => console.error("messages snapshot error:", err));
-
-        const unsubUsers = col(...base, "users").onSnapshot((s) => {
-          setData((p) => ({ ...p, users: s.docs.map((d) => ({ id: d.id, ...d.data() })) }));
-        }, (err) => console.error("users snapshot error:", err));
-
-        docRef(...base, "users", user.uid).set({
-          name: roomInfo.nickname,
-          uid: user.uid,
-          lastSeen: serverTimestamp()
-        }, { merge: true });
-
-        docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set({
-          lastActivity: serverTimestamp(),
-          activeUserCount: (data.users?.length || 0) + 1
-        }, { merge: true });
-
-        return () => { unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers(); };
-      }, [user, isLoggedIn, roomInfo.id]);
 
       // --- helpers ---
       const getCanvasWH = () => {
@@ -285,7 +249,6 @@
       const computeSelectionFromBox = (box) => {
         const r = normRect(box.x1, box.y1, box.x2, box.y2);
 
-        // texts: bounds intersects
         const selectedTexts = [];
         for (const t of data.texts) {
           if ((t.page || 1) !== currentPage) continue;
@@ -295,7 +258,6 @@
           if (rectIntersects(r, tb)) selectedTexts.push(t.id);
         }
 
-        // strokes: any point inside box
         const selectedStrokes = [];
         for (const s of data.strokes) {
           if ((s.page || 1) !== currentPage) continue;
@@ -310,7 +272,56 @@
         return { texts: selectedTexts, strokes: selectedStrokes };
       };
 
-      // --- Canvas redraw (텍스트 hitbox도 같이 계산) ---
+      // ✅ Room Data Sync (roomInfo.id 기준)
+      useEffect(() => {
+        if (!user || !isLoggedIn || !roomInfo.id) return;
+
+        const base = ["artifacts", roomInfo.id, "public", "data"];
+        const sortByTime = (docs) =>
+          [...docs].sort((a, b) => (a.timestamp?.toMillis?.() || 0) - (b.timestamp?.toMillis?.() || 0));
+
+        const unsubStrokes = col(...base, "strokes").onSnapshot((s) => {
+          setData((p) => ({ ...p, strokes: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
+        }, (err) => console.error("strokes snapshot error:", err));
+
+        const unsubTexts = col(...base, "texts").onSnapshot((s) => {
+          setData((p) => ({ ...p, texts: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
+        }, (err) => console.error("texts snapshot error:", err));
+
+        const unsubMessages = col(...base, "messages").onSnapshot((s) => {
+          setData((p) => ({ ...p, messages: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
+        }, (err) => console.error("messages snapshot error:", err));
+
+        const unsubUsers = col(...base, "users").onSnapshot((s) => {
+          setData((p) => ({ ...p, users: s.docs.map((d) => ({ id: d.id, ...d.data() })) }));
+        }, (err) => console.error("users snapshot error:", err));
+
+        // users presence
+        docRef(...base, "users", user.uid).set({
+          name: roomInfo.nickname,
+          uid: user.uid,
+          lastSeen: serverTimestamp()
+        }, { merge: true });
+
+        // ✅ 로비에 입장 즉시 등록 + heartbeat
+        const lobbyRoomDoc = docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id);
+
+        lobbyRoomDoc.set({
+          roomId: roomInfo.id,
+          lastActivity: serverTimestamp(),
+        }, { merge: true });
+
+        const heartbeat = setInterval(() => {
+          lobbyRoomDoc.set({ lastActivity: serverTimestamp() }, { merge: true });
+        }, 15000);
+
+        return () => {
+          unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers();
+          clearInterval(heartbeat);
+        };
+      }, [user, isLoggedIn, roomInfo.id]);
+
+      // --- Canvas redraw + text bounds ---
       const redraw = useCallback(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -335,7 +346,6 @@
             s.points.slice(1).forEach((p) => ctx.lineTo(p.x * w, p.y * h));
             ctx.stroke();
 
-            // selected stroke outline (가벼운 강조)
             if (selection.strokes.includes(s.id)) {
               ctx.save();
               ctx.globalAlpha = 0.5;
@@ -382,7 +392,6 @@
 
             boundsMap.set(t.id, { x1, y1, x2, y2, page: t.page || 1 });
 
-            // selected text outline
             if (selection.texts.includes(t.id)) {
               ctx.save();
               ctx.strokeStyle = "#10b981";
@@ -409,7 +418,7 @@
 
       useEffect(() => { redraw(); }, [redraw]);
 
-      // --- resize (scale 누적 방지) ---
+      // --- resize: scale 누적 방지 ---
       useEffect(() => {
         const resize = () => {
           if (!containerRef.current || !canvasRef.current) return;
@@ -433,12 +442,11 @@
         return () => window.removeEventListener("resize", resize);
       }, [redraw]);
 
-      // --- UX: tool 변경 시 커서/상태 정리 ---
+      // --- tool change cleanup ---
       useEffect(() => {
         document.body.style.cursor =
           ui.tool === "select" ? "default" : (ui.tool === "text" ? "text" : "crosshair");
 
-        // 텍스트 툴로 바꾸면 드래그 상태/선택 박스 정리
         if (ui.tool === "text") {
           draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0 };
           dragGhost.current = { active: false, id: null, x: null, y: null };
@@ -447,22 +455,20 @@
           setSelection({ texts: [], strokes: [] });
         }
 
-        // 펜으로 바꾸면 선택 해제
         if (ui.tool === "pencil") {
           setSelection({ texts: [], strokes: [] });
           setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
         }
       }, [ui.tool]);
 
-      // --- 텍스트 저장(생성/수정) : ✅ 중복 submit 방지 + UI 먼저 닫기 ---
-      const submitText = async (source = "unknown") => {
+      // ✅ submitText: 중복 방지 + UI 먼저 닫기
+      const submitText = async () => {
         if (submittingText.current) return;
         submittingText.current = true;
 
         const trimmed = (textInput.value || "").trim();
         const snapshot = { ...textInput };
 
-        // ✅ UI 먼저 닫기(모바일/포인터 꼬임 방지)
         setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
 
         try {
@@ -482,16 +488,16 @@
 
           if (snapshot.mode === "edit" && snapshot.targetId) {
             await docRef("artifacts", roomInfo.id, "public", "data", "texts", snapshot.targetId).update(payloadBase);
-            setSelection((p) => ({ ...p, texts: [snapshot.targetId], strokes: [] }));
+            setSelection({ texts: [snapshot.targetId], strokes: [] });
           } else {
             const added = await col("artifacts", roomInfo.id, "public", "data", "texts").add({
               ...payloadBase,
               timestamp: serverTimestamp()
             });
-            setSelection((p) => ({ ...p, texts: [added.id], strokes: [] }));
+            setSelection({ texts: [added.id], strokes: [] });
           }
 
-          docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
+          docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
             { lastActivity: serverTimestamp() },
             { merge: true }
           );
@@ -507,13 +513,11 @@
         if (!isLoggedIn) return;
         if (textInput.active) return;
 
-        // pointer capture
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 
         const pos = getPos(e);
         downPosPx.current = { x: pos.rawX, y: pos.rawY };
 
-        // 텍스트 추가 모드: 탭하면 입력창 생성
         if (ui.tool === "text") {
           setSelection({ texts: [], strokes: [] });
           setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
@@ -529,12 +533,10 @@
           return;
         }
 
-        // 선택/이동 모드
         if (ui.tool === "select") {
           const hit = hitTestText(pos.x, pos.y);
 
           if (hit) {
-            // 텍스트 선택 + 드래그 준비
             setSelection({ texts: [hit.id], strokes: [] });
 
             const ox = pos.x - (hit.x || 0);
@@ -545,7 +547,6 @@
             marquee.current = { down: false, startX: 0, startY: 0, started: false };
             setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
           } else {
-            // 빈 공간: 마키(영역 선택) 준비
             setSelection({ texts: [], strokes: [] });
             marquee.current = { down: true, startX: pos.x, startY: pos.y, started: false };
             setSelectBox({ active: false, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y });
@@ -556,7 +557,6 @@
           return;
         }
 
-        // 펜 모드
         if (ui.tool === "pencil") {
           setSelection({ texts: [], strokes: [] });
           setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
@@ -571,7 +571,6 @@
         if (textInput.active) return;
         const pos = getPos(e);
 
-        // 텍스트 드래그 이동
         if (ui.tool === "select" && draggingText.current.active && draggingText.current.id) {
           const nx = clamp01(pos.x - draggingText.current.offsetX);
           const ny = clamp01(pos.y - draggingText.current.offsetY);
@@ -580,7 +579,6 @@
           return;
         }
 
-        // 마키 선택 박스
         if (ui.tool === "select" && marquee.current.down) {
           const dx = Math.abs(pos.rawX - downPosPx.current.x);
           const dy = Math.abs(pos.rawY - downPosPx.current.y);
@@ -597,7 +595,6 @@
           return;
         }
 
-        // 드로잉
         if (ui.tool === "pencil" && drawing.current.isDrawing) {
           drawing.current.points.push({ x: pos.x, y: pos.y });
 
@@ -617,8 +614,7 @@
         }
       };
 
-      const onPointerUp = async (e) => {
-        // 텍스트 드래그 종료 -> DB 업데이트
+      const onPointerUp = async () => {
         if (ui.tool === "select" && draggingText.current.active && draggingText.current.id) {
           const id = draggingText.current.id;
           const finalX = dragGhost.current.x;
@@ -634,7 +630,8 @@
                 y: finalY,
                 updatedAt: serverTimestamp()
               });
-              docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
+
+              docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
                 { lastActivity: serverTimestamp() },
                 { merge: true }
               );
@@ -647,7 +644,6 @@
           return;
         }
 
-        // 마키 종료 -> 선택 확정
         if (ui.tool === "select" && marquee.current.down) {
           const wasStarted = marquee.current.started;
           marquee.current = { down: false, startX: 0, startY: 0, started: false };
@@ -658,14 +654,12 @@
             setSelection(selected);
             setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
           } else {
-            // 클릭만 한 경우: 선택 유지/해제는 down에서 이미 처리됨
             setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
           }
           redraw();
           return;
         }
 
-        // 펜 종료 -> DB 저장
         if (ui.tool === "pencil" && drawing.current.isDrawing) {
           drawing.current.isDrawing = false;
           if (drawing.current.points.length < 2) return;
@@ -680,7 +674,8 @@
               userName: roomInfo.nickname,
               timestamp: serverTimestamp()
             });
-            docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
+
+            docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
               { lastActivity: serverTimestamp() },
               { merge: true }
             );
@@ -690,7 +685,6 @@
         }
       };
 
-      // 더블클릭: 텍스트 편집
       const onDoubleClick = (e) => {
         if (!isLoggedIn) return;
         if (ui.tool !== "select") return;
@@ -713,7 +707,6 @@
         });
       };
 
-      // --- Undo (내 마지막 stroke/text) ---
       const undoLast = async () => {
         if (!user) return;
 
@@ -722,7 +715,6 @@
 
         const lastStroke = myStrokes[myStrokes.length - 1];
         const lastText = myTexts[myTexts.length - 1];
-
         if (!lastStroke && !lastText) return;
 
         let target;
@@ -745,7 +737,7 @@
         }
       };
 
-      // --- ✅ 선택 영역 일괄 삭제 (texts + strokes) ---
+      // ✅ 선택 영역 일괄 삭제 (texts + strokes)
       const deleteSelectionBatch = async () => {
         const total = selection.texts.length + selection.strokes.length;
         if (total === 0) return;
@@ -767,7 +759,7 @@
           setSelection({ texts: [], strokes: [] });
           setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
 
-          docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
+          docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
             { lastActivity: serverTimestamp() },
             { merge: true }
           );
@@ -777,15 +769,61 @@
         }
       };
 
-      const generateNewRoomId = () => {
-        const randomId = "Room-" + Math.random().toString(36).substring(2, 7).toUpperCase();
-        setRoomInfo((p) => ({ ...p, id: randomId }));
+      // ✅ 새 회의 만들기: 로비 문서 존재 여부 확인 후 중복 방지(트랜잭션)
+      const createRoomUnique = async () => {
+        const makeId = () => "Room-" + Math.random().toString(36).substring(2, 7).toUpperCase();
+
+        for (let i = 0; i < 8; i++) {
+          const rid = makeId();
+          const lobbyRoomDoc = docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", rid);
+
+          try {
+            const ok = await db.runTransaction(async (tx) => {
+              const snap = await tx.get(lobbyRoomDoc);
+              if (snap.exists) return false;
+              tx.set(lobbyRoomDoc, {
+                roomId: rid,
+                createdAt: serverTimestamp(),
+                lastActivity: serverTimestamp(),
+                activeUserCount: 0
+              }, { merge: true });
+              return true;
+            });
+
+            if (ok) {
+              setRoomInfo((p) => ({ ...p, id: rid }));
+              return;
+            }
+          } catch (err) {
+            console.error("createRoomUnique tx failed:", err);
+          }
+        }
+        alert("방 생성에 실패했습니다. 다시 시도해주세요.");
       };
 
-      const handleLogin = (e) => {
+      // ✅ 입장하기: 로비(고정)에서 방 존재 확인 → 없으면 생성, 있으면 join
+      const handleLogin = async (e) => {
         e.preventDefault();
-        if (!roomInfo.nickname.trim() || !roomInfo.id.trim()) return;
-        localStorage.setItem("eboard_nick", roomInfo.nickname);
+        const nick = roomInfo.nickname.trim();
+        const rid = roomInfo.id.trim();
+        if (!nick || !rid) return;
+
+        localStorage.setItem("eboard_nick", nick);
+
+        const lobbyRoomDoc = docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", rid);
+        const snap = await lobbyRoomDoc.get();
+
+        if (!snap.exists) {
+          await lobbyRoomDoc.set({
+            roomId: rid,
+            createdAt: serverTimestamp(),
+            lastActivity: serverTimestamp(),
+            activeUserCount: 0
+          }, { merge: true });
+        } else {
+          await lobbyRoomDoc.set({ lastActivity: serverTimestamp() }, { merge: true });
+        }
+
         setIsLoggedIn(true);
       };
 
@@ -800,6 +838,7 @@
                     E-Board Collab
                   </h1>
                   <p className="text-gray-400 text-sm mt-1">실시간 협업을 위한 스마트 칠판</p>
+                  <p className="text-[10px] text-gray-500 mt-2 font-mono">LOBBY: {LOBBY_ID}</p>
                 </div>
 
                 <form onSubmit={handleLogin} className="space-y-4">
@@ -825,10 +864,11 @@
                         </label>
                         <button
                           type="button"
-                          onClick={generateNewRoomId}
+                          onClick={createRoomUnique}
                           className="text-[10px] text-emerald-400 font-bold hover:underline flex items-center gap-1"
+                          title="중복 방지 생성"
                         >
-                          <Icons.Plus /> 새 회의 만들기
+                          <Icons.Plus /> 새 회의 만들기(중복방지)
                         </button>
                       </div>
                       <input
@@ -836,9 +876,13 @@
                         value={roomInfo.id}
                         onChange={(e) => setRoomInfo((p) => ({ ...p, id: e.target.value }))}
                         className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition"
-                        placeholder="예: RoomA, Project1"
+                        placeholder="예: EcoBio, Project1"
                         required
                       />
+                      <div className="text-[10px] text-gray-500 mt-2 leading-relaxed">
+                        같은 방으로 들어가려면 <span className="text-gray-300 font-bold">방 이름을 똑같이</span> 입력하면 됩니다.<br/>
+                        이미 존재하는 방이면 자동으로 <span className="text-gray-300 font-bold">입장(Join)</span> 처리됩니다.
+                      </div>
                     </div>
                   </div>
 
@@ -851,6 +895,7 @@
                 </form>
               </div>
 
+              {/* Lobby list */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between px-2">
                   <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">활동 중인 회의 목록</h2>
@@ -965,7 +1010,6 @@
                 onPointerCancel={onPointerUp}
                 onDoubleClick={onDoubleClick}
                 className="block"
-                // ✅ 텍스트 입력 중에는 캔버스가 방해하지 않도록
                 style={{
                   touchAction: (ui.tool === "pencil") ? "none" : "auto",
                   pointerEvents: textInput.active ? "none" : "auto"
@@ -985,11 +1029,11 @@
                   }}
                   value={textInput.value}
                   onChange={(e) => setTextInput((p) => ({ ...p, value: e.target.value }))}
-                  onBlur={() => submitText("blur")}
+                  onBlur={submitText}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      submitText("enter");
+                      submitText();
                       e.currentTarget.blur();
                     }
                     if (e.key === "Escape") {
@@ -1003,7 +1047,6 @@
 
               {/* Bottom Tool Bar */}
               <div className="absolute bottom-8 left-1/2 -translate-x-1/2 glass-panel border border-gray-700 px-6 py-3 rounded-3xl flex items-center gap-6 shadow-2xl">
-                {/* tools */}
                 <div className="flex gap-2 p-1 bg-gray-900/50 rounded-xl">
                   <button
                     onClick={() => setUi((p) => ({ ...p, tool: "pencil" }))}
@@ -1028,7 +1071,6 @@
                   </button>
                 </div>
 
-                {/* colors */}
                 <div className="flex gap-3">
                   {["#10b981", "#ef4444", "#3b82f6", "#ffffff"].map((c) => (
                     <button
@@ -1041,7 +1083,6 @@
                   ))}
                 </div>
 
-                {/* actions */}
                 <div className="flex gap-2">
                   <button onClick={undoLast} className="p-2 hover:bg-gray-700 rounded-xl text-gray-400 hover:text-white" title="Undo">
                     <Icons.Undo />
@@ -1057,7 +1098,6 @@
                   </button>
                 </div>
 
-                {/* hint */}
                 {ui.tool === "select" && (
                   <div className="hidden md:block text-[10px] text-gray-400 font-mono">
                     텍스트 클릭: 선택 · 텍스트 드래그: 이동 · 텍스트 더블클릭: 수정 · 빈 곳 드래그: 영역 선택 · 🗑: 일괄 삭제
@@ -1093,7 +1133,7 @@
                     timestamp: serverTimestamp()
                   });
 
-                  docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
+                  docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
                     { lastActivity: serverTimestamp() },
                     { merge: true }
                   );
