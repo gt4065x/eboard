@@ -34,6 +34,7 @@
             z-index: 50;
             white-space: nowrap;
         }
+        .room-card:hover { transform: translateY(-2px); }
     </style>
 </head>
 <body>
@@ -58,6 +59,7 @@
             measurementId: "G-BCPK0YX0E3"
         };
 
+        const globalAppId = typeof __app_id !== 'undefined' ? __app_id : 'vibe-board-lobby';
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
@@ -68,33 +70,30 @@
             Trash: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>,
             Users: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>,
             Send: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>,
-            Undo: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+            Undo: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>,
+            Plus: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>
         };
 
         const App = () => {
             const [user, setUser] = useState(null);
             const [isLoggedIn, setIsLoggedIn] = useState(false);
             const [roomInfo, setRoomInfo] = useState({
-                id: typeof __app_id !== 'undefined' ? __app_id : 'vibe-room-1',
+                id: '',
                 nickname: localStorage.getItem('eboard_nick') || ''
             });
             
+            const [activeRooms, setActiveRooms] = useState([]);
             const [currentPage, setCurrentPage] = useState(1);
             const [data, setData] = useState({ strokes: [], texts: [], messages: [], users: [] });
-            const [ui, setUi] = useState({ 
-                color: '#10b981', 
-                width: 4, 
-                showChat: true, 
-                msg: '', 
-                tool: 'pencil'
-            });
+            const [ui, setUi] = useState({ color: '#10b981', width: 4, showChat: true, msg: '', tool: 'pencil' });
             const [textInput, setTextInput] = useState({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: '' });
 
             const canvasRef = useRef(null);
             const containerRef = useRef(null);
             const drawing = useRef({ isDrawing: false, points: [] });
+            const textRef = useRef(null);
 
-            // 1. Auth & Login Logic
+            // 1. Auth & Lobby Listeners
             useEffect(() => {
                 const initAuth = async () => {
                     try {
@@ -107,16 +106,21 @@
                 };
                 initAuth();
                 const unsubscribe = onAuthStateChanged(auth, u => setUser(u));
-                return () => unsubscribe();
+
+                // Lobby Listener: 활동중인 방 목록 실시간 감시
+                const unsubLobby = onSnapshot(collection(db, 'artifacts', globalAppId, 'public', 'data', 'active_rooms'), s => {
+                    const rooms = s.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setActiveRooms(rooms.sort((a, b) => (b.lastActivity?.toMillis() || 0) - (a.lastActivity?.toMillis() || 0)));
+                });
+
+                return () => { unsubscribe(); unsubLobby(); };
             }, []);
 
-            // 2. Real-time Data Sync (Rule 1 & 2)
+            // 2. Room Data Sync
             useEffect(() => {
                 if (!user || !isLoggedIn) return;
                 
-                // 데이터 경로: /artifacts/{roomId}/public/data/{collection}
                 const base = ['artifacts', roomInfo.id, 'public', 'data'];
-                
                 const sortByTime = (docs) => [...docs].sort((a, b) => (a.timestamp?.toMillis() || 0) - (b.timestamp?.toMillis() || 0));
 
                 const unsubStrokes = onSnapshot(collection(db, ...base, 'strokes'), s => {
@@ -135,15 +139,21 @@
                     setData(p => ({ ...p, users: s.docs.map(d => ({ id: d.id, ...d.data() })) }));
                 });
 
-                // 본인 접속 정보 기록
+                // 사용자 입장 및 방 활성화 상태 업데이트
                 setDoc(doc(db, ...base, 'users', user.uid), {
                     name: roomInfo.nickname, uid: user.uid, lastSeen: serverTimestamp()
                 });
+                
+                // Lobby에 현재 방 상태 기록 (다른 사용자들이 볼 수 있도록)
+                setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'active_rooms', roomInfo.id), {
+                    lastActivity: serverTimestamp(),
+                    activeUserCount: data.users.length + 1
+                }, { merge: true });
 
                 return () => { unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers(); };
             }, [user, isLoggedIn, roomInfo.id]);
 
-            // 3. Canvas Redraw
+            // 3. Canvas Logic
             const redraw = useCallback(() => {
                 const canvas = canvasRef.current;
                 if (!canvas) return;
@@ -171,7 +181,6 @@
 
             useEffect(() => { redraw(); }, [redraw]);
 
-            // 4. Interaction Logic
             const getPos = (e) => {
                 const rect = canvasRef.current.getBoundingClientRect();
                 const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -216,6 +225,8 @@
                     points: drawing.current.points, color: ui.color, width: ui.width,
                     page: currentPage, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp()
                 });
+                // 활동 발생 시 로비 데이터 갱신
+                setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'active_rooms', roomInfo.id), { lastActivity: serverTimestamp() }, { merge: true });
             };
 
             const submitText = async () => {
@@ -226,15 +237,30 @@
                 };
                 setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: '' });
                 await addDoc(collection(db, 'artifacts', roomInfo.id, 'public', 'data', 'texts'), payload);
+                setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'active_rooms', roomInfo.id), { lastActivity: serverTimestamp() }, { merge: true });
             };
 
-            const sendMessage = async (e) => {
-                e.preventDefault();
-                if (!ui.msg.trim()) return;
-                const m = ui.msg; setUi(p => ({ ...p, msg: '' }));
-                await addDoc(collection(db, 'artifacts', roomInfo.id, 'public', 'data', 'messages'), {
-                    text: m, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp()
-                });
+            const undoLast = async () => {
+                if (!user) return;
+                const myStrokes = data.strokes.filter(s => s.userId === user.uid && (s.page || 1) === currentPage);
+                const myTexts = data.texts.filter(t => t.userId === user.uid && (t.page || 1) === currentPage);
+                const lastStroke = myStrokes[myStrokes.length - 1];
+                const lastText = myTexts[myTexts.length - 1];
+                if (!lastStroke && !lastText) return;
+                let target;
+                if (!lastStroke) target = { id: lastText.id, col: 'texts' };
+                else if (!lastText) target = { id: lastStroke.id, col: 'strokes' };
+                else {
+                    const sTime = lastStroke.timestamp?.toMillis() || 0;
+                    const tTime = lastText.timestamp?.toMillis() || 0;
+                    target = sTime > tTime ? { id: lastStroke.id, col: 'strokes' } : { id: lastText.id, col: 'texts' };
+                }
+                await deleteDoc(doc(db, 'artifacts', roomInfo.id, 'public', 'data', target.col, target.id));
+            };
+
+            const generateNewRoomId = () => {
+                const randomId = 'Room-' + Math.random().toString(36).substring(2, 7).toUpperCase();
+                setRoomInfo(p => ({ ...p, id: randomId }));
             };
 
             const handleLogin = (e) => {
@@ -244,7 +270,6 @@
                 setIsLoggedIn(true);
             };
 
-            // 5. Layout Setup
             useEffect(() => {
                 const resize = () => {
                     if (!containerRef.current || !canvasRef.current) return;
@@ -261,21 +286,72 @@
 
             if (!isLoggedIn) {
                 return (
-                    <div className="h-screen w-full flex items-center justify-center bg-gray-900 p-6">
-                        <div className="max-w-md w-full bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl">
-                            <h1 className="text-3xl font-black text-white mb-6 text-center bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 uppercase tracking-tighter">E-Board Login</h1>
-                            <form onSubmit={handleLogin} className="space-y-4">
+                    <div className="h-screen w-full flex items-center justify-center bg-gray-900 p-6 overflow-y-auto">
+                        <div className="max-w-4xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+                            {/* Login & Create Section */}
+                            <div className="bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl space-y-6">
                                 <div>
-                                    <label className="text-xs text-gray-500 mb-1 block uppercase font-bold">Nickname</label>
-                                    <input type="text" value={roomInfo.nickname} onChange={e => setRoomInfo(p => ({...p, nickname: e.target.value}))} className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition" placeholder="Your Name" required />
+                                    <h1 className="text-3xl font-black text-white bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 uppercase tracking-tighter">E-Board Collab</h1>
+                                    <p className="text-gray-400 text-sm mt-1">실시간 협업을 위한 스마트 칠판</p>
                                 </div>
-                                <div>
-                                    <label className="text-xs text-gray-500 mb-1 block uppercase font-bold">Room Name (ID)</label>
-                                    <input type="text" value={roomInfo.id} onChange={e => setRoomInfo(p => ({...p, id: e.target.value}))} className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition" placeholder="Common Room ID" required />
-                                    <p className="text-[10px] text-gray-500 mt-2 px-1">* 상대방과 **동일한 방 이름**을 입력해야 서로의 글이 보입니다.</p>
+
+                                <form onSubmit={handleLogin} className="space-y-4">
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="text-[10px] text-gray-500 mb-1 block uppercase font-bold tracking-widest">사용자 닉네임</label>
+                                            <input type="text" value={roomInfo.nickname} onChange={e => setRoomInfo(p => ({...p, nickname: e.target.value}))} className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition" placeholder="이름을 입력하세요" required />
+                                        </div>
+                                        
+                                        <div className="pt-2">
+                                            <div className="flex justify-between items-end mb-1">
+                                                <label className="text-[10px] text-gray-500 uppercase font-bold tracking-widest">방 이름 (ID)</label>
+                                                <button type="button" onClick={generateNewRoomId} className="text-[10px] text-emerald-400 font-bold hover:underline flex items-center gap-1">
+                                                    <Icons.Plus /> 새 회의 만들기
+                                                </button>
+                                            </div>
+                                            <input type="text" value={roomInfo.id} onChange={e => setRoomInfo(p => ({...p, id: e.target.value}))} className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition" placeholder="예: RoomA, Project1" required />
+                                        </div>
+                                    </div>
+                                    
+                                    <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-emerald-500/20 uppercase tracking-widest mt-4">입장하기</button>
+                                </form>
+                            </div>
+
+                            {/* Lobby / Active Rooms List */}
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between px-2">
+                                    <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">활동 중인 회의 목록</h2>
+                                    <span className="text-[10px] bg-gray-800 text-gray-500 px-2 py-0.5 rounded-full border border-gray-700">Lobby</span>
                                 </div>
-                                <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-emerald-500/20 uppercase">Join Collaborative Session</button>
-                            </form>
+                                
+                                <div className="space-y-2 max-h-[480px] overflow-y-auto pr-2 custom-scrollbar">
+                                    {activeRooms.length === 0 ? (
+                                        <div className="p-12 border-2 border-dashed border-gray-800 rounded-3xl text-center flex flex-col items-center gap-3">
+                                            <div className="p-3 bg-gray-800 rounded-full text-gray-600"><Icons.Users /></div>
+                                            <div className="text-gray-600 text-sm font-medium">현재 진행 중인 회의가 없습니다.<br/><span className="text-xs opacity-60">새 회의를 직접 만들어보세요!</span></div>
+                                        </div>
+                                    ) : (
+                                        activeRooms.map(room => (
+                                            <button 
+                                                key={room.id}
+                                                onClick={() => setRoomInfo(p => ({ ...p, id: room.id }))}
+                                                className="w-full room-card bg-gray-800/40 hover:bg-gray-800 border border-gray-700/50 hover:border-emerald-500/50 p-5 rounded-2xl flex justify-between items-center transition group text-left shadow-sm"
+                                            >
+                                                <div className="space-y-1">
+                                                    <div className="text-emerald-400 font-black text-xl tracking-tight uppercase">{room.id}</div>
+                                                    <div className="flex items-center gap-2 text-[10px] text-gray-500 font-mono">
+                                                        <Icons.Users />
+                                                        <span>최근 활동: {room.lastActivity?.toMillis() ? new Date(room.lastActivity.toMillis()).toLocaleTimeString() : '방금 전'}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="h-10 w-10 flex items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-all">
+                                                    →
+                                                </div>
+                                            </button>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 );
@@ -285,19 +361,20 @@
                 <div className="h-screen w-full flex flex-col bg-gray-950 text-white overflow-hidden">
                     <header className="h-14 glass-panel border-b border-gray-800 flex items-center justify-between px-6 z-20">
                         <div className="flex items-center gap-4">
-                            <span className="font-black text-lg text-emerald-400">BOARD.</span>
+                            <span className="font-black text-lg text-emerald-400 tracking-tighter">BOARD.</span>
                             <div className="h-6 w-px bg-gray-800 mx-1" />
                             <div className="flex items-center gap-2 text-[10px] font-mono text-gray-400 bg-gray-900 px-3 py-1 rounded-full border border-gray-800">
-                                <span>ROOM: {roomInfo.id}</span>
-                                <span className="text-emerald-500">● {data.users.length} Online</span>
+                                <span className="text-white">ROOM: {roomInfo.id}</span>
+                                <span className="text-emerald-500 font-bold uppercase">● {data.users.length} ONLINE</span>
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
-                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="p-1 hover:bg-gray-800 rounded text-gray-400">◀</button>
-                            <span className="text-xs font-bold font-mono">PAGE {currentPage}</span>
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="p-1 hover:bg-gray-800 rounded text-gray-400" disabled={currentPage === 1}>◀</button>
+                            <span className="text-xs font-bold font-mono">P. {currentPage}</span>
                             <button onClick={() => setCurrentPage(p => p + 1)} className="p-1 hover:bg-gray-800 rounded text-gray-400">▶</button>
                             <div className="h-6 w-px bg-gray-800 mx-1" />
                             <button onClick={() => setUi(p => ({...p, showChat: !p.showChat}))} className={`p-2 rounded-lg transition ${ui.showChat ? 'bg-emerald-500/20 text-emerald-400' : 'hover:bg-gray-800'}`}>💬</button>
+                            <button onClick={() => { if(confirm('회의에서 나가시겠습니까?')) window.location.reload(); }} className="p-2 text-xs font-bold text-gray-500 hover:text-white transition">LEAVE</button>
                         </div>
                     </header>
 
@@ -311,8 +388,8 @@
 
                             <div className="absolute bottom-8 left-1/2 -translate-x-1/2 glass-panel border border-gray-700 px-6 py-3 rounded-3xl flex items-center gap-6 shadow-2xl">
                                 <div className="flex gap-2 p-1 bg-gray-900/50 rounded-xl">
-                                    <button onClick={() => setUi(p => ({ ...p, tool: 'pencil' }))} className={`p-2 rounded-lg transition ${ui.tool === 'pencil' ? 'bg-emerald-500' : 'text-gray-400 hover:text-white'}`}><Icons.Pencil /></button>
-                                    <button onClick={() => setUi(p => ({ ...p, tool: 'text' }))} className={`p-2 rounded-lg transition ${ui.tool === 'text' ? 'bg-emerald-500' : 'text-gray-400 hover:text-white'}`}><Icons.Text /></button>
+                                    <button onClick={() => setUi(p => ({ ...p, tool: 'pencil' }))} className={`p-2 rounded-lg transition ${ui.tool === 'pencil' ? 'bg-emerald-500 text-white' : 'text-gray-400 hover:text-white'}`}><Icons.Pencil /></button>
+                                    <button onClick={() => setUi(p => ({ ...p, tool: 'text' }))} className={`p-2 rounded-lg transition ${ui.tool === 'text' ? 'bg-emerald-500 text-white' : 'text-gray-400 hover:text-white'}`}><Icons.Text /></button>
                                 </div>
                                 <div className="flex gap-3">
                                     {['#10b981', '#ef4444', '#3b82f6', '#ffffff'].map(c => (
@@ -321,7 +398,7 @@
                                 </div>
                                 <div className="flex gap-2">
                                     <button onClick={undoLast} className="p-2 hover:bg-gray-700 rounded-xl text-gray-400 hover:text-white"><Icons.Undo /></button>
-                                    <button onClick={clearPage} className="p-2 hover:bg-red-500/20 rounded-xl text-gray-400 hover:text-red-400"><Icons.Trash /></button>
+                                    <button onClick={() => { if(confirm('모든 내용을 지울까요?')) addDoc(collection(db, 'artifacts', roomInfo.id, 'public', 'data', 'messages'), { text: '🚨 페이지 초기화됨', userName: 'System', timestamp: serverTimestamp() }); }} className="p-2 hover:bg-red-500/20 rounded-xl text-gray-400 hover:text-red-400"><Icons.Trash /></button>
                                 </div>
                             </div>
                         </div>
@@ -330,13 +407,21 @@
                             <div className="flex-1 overflow-y-auto p-4 space-y-4">
                                 {data.messages.map((m, i) => (
                                     <div key={m.id || i} className={`flex flex-col ${m.userId === user?.uid ? 'items-end' : 'items-start'}`}>
-                                        <span className="text-[10px] text-gray-500 mb-1 px-1 font-mono uppercase">{m.userName}</span>
-                                        <div className={`max-w-[90%] px-3 py-2 text-sm rounded-2xl ${m.userId === user?.uid ? 'bg-emerald-600 text-white rounded-tr-none' : 'bg-gray-800 text-gray-200 rounded-tl-none'}`}>{m.text}</div>
+                                        <span className="text-[10px] text-gray-500 mb-1 px-1 font-mono uppercase tracking-tighter">{m.userName}</span>
+                                        <div className={`max-w-[90%] px-3 py-2 text-sm rounded-2xl shadow-sm ${m.userId === user?.uid ? 'bg-emerald-600 text-white rounded-tr-none' : 'bg-gray-800 text-gray-200 rounded-tl-none border border-gray-700/50'}`}>{m.text}</div>
                                     </div>
                                 ))}
                             </div>
-                            <form onSubmit={sendMessage} className="p-4 bg-gray-900 border-t border-gray-800 flex gap-2">
-                                <input type="text" value={ui.msg} onChange={e => setUi(p => ({ ...p, msg: e.target.value }))} placeholder="Chat..." className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500" />
+                            <form onSubmit={async (e) => {
+                                e.preventDefault();
+                                if (!ui.msg.trim()) return;
+                                const m = ui.msg; setUi(p => ({ ...p, msg: '' }));
+                                await addDoc(collection(db, 'artifacts', roomInfo.id, 'public', 'data', 'messages'), {
+                                    text: m, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp()
+                                });
+                                setDoc(doc(db, 'artifacts', globalAppId, 'public', 'data', 'active_rooms', roomInfo.id), { lastActivity: serverTimestamp() }, { merge: true });
+                            }} className="p-4 bg-gray-900 border-t border-gray-800 flex gap-2">
+                                <input type="text" value={ui.msg} onChange={e => setUi(p => ({ ...p, msg: e.target.value }))} placeholder="채팅 입력..." className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500" />
                                 <button type="submit" disabled={!ui.msg.trim()} className="p-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl transition disabled:opacity-50"><Icons.Send /></button>
                             </form>
                         </div>
