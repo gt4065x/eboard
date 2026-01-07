@@ -2,331 +2,351 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>실시간 협업 디지털 칠판</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Live Collab E-Board</title>
+    
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel (JSX) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
     <style>
-        input[type='range'] {
-            writing-mode: bt-lr; /* IE/Edge */
-            -webkit-appearance: slider-vertical; /* WebKit */
-            width: 8px;
-            height: 100px;
-            padding: 0 5px;
-        }
-        canvas {
-            touch-action: none; /* 터치 스크롤 방지 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1f2937; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+        body { background-color: #111827; margin: 0; overflow: hidden; touch-action: none; }
+        canvas { touch-action: none; cursor: crosshair; }
+        .glass-panel { background: rgba(31, 41, 55, 0.85); backdrop-filter: blur(10px); }
+        .text-input-overlay {
+            position: absolute;
+            background: transparent;
+            border: 1px dashed #10b981;
+            color: white;
+            outline: none;
+            padding: 2px;
+            font-family: sans-serif;
+            z-index: 50;
+            white-space: nowrap;
         }
     </style>
 </head>
-<body class="bg-slate-100 overflow-hidden font-sans">
+<body>
+    <div id="root"></div>
 
-    <div id="app" class="flex flex-col h-screen">
-        <!-- 로딩 화면 -->
-        <div id="loading" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
-            <div class="text-center p-8">
-                <div class="animate-spin mb-4 inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
-                <p class="text-slate-600 font-medium">칠판 접속 중...</p>
-            </div>
-        </div>
-
-        <!-- 헤더 -->
-        <header class="bg-white border-b px-6 py-3 flex justify-between items-center shadow-sm z-10">
-            <div class="flex items-center space-x-3">
-                <div class="bg-blue-600 p-2 rounded-lg text-white">
-                    <i data-lucide="palette" class="w-5 h-5"></i>
-                </div>
-                <h1 class="text-xl font-bold text-slate-800">디지털 협업 칠판</h1>
-            </div>
-            
-            <div class="flex items-center space-x-4">
-                <div class="flex items-center bg-slate-100 px-3 py-1.5 rounded-full text-sm text-slate-600">
-                    <i data-lucide="users" class="w-4 h-4 mr-2"></i>
-                    <span>실시간 협업 중</span>
-                </div>
-                <div class="flex items-center text-xs text-slate-400">
-                    <i data-lucide="user" class="w-3 h-3 mr-1"></i>
-                    <span id="user-id">연결 중...</span>
-                </div>
-            </div>
-        </header>
-
-        <div class="flex flex-1 relative overflow-hidden">
-            <!-- 도구 모음 -->
-            <aside class="absolute left-4 top-1/2 -translate-y-1/2 bg-white p-3 rounded-2xl shadow-xl flex flex-col space-y-4 z-20 border border-slate-200">
-                <div class="space-y-2">
-                    <button id="btn-pencil" class="p-3 rounded-xl transition-all bg-blue-100 text-blue-600 shadow-inner" title="연필">
-                        <i data-lucide="pencil" class="w-6 h-6"></i>
-                    </button>
-                    <button id="btn-eraser" class="p-3 rounded-xl transition-all hover:bg-slate-100 text-slate-400" title="지우개">
-                        <i data-lucide="eraser" class="w-6 h-6"></i>
-                    </button>
-                </div>
-
-                <div class="h-px bg-slate-100 mx-1"></div>
-
-                <!-- 색상 선택 -->
-                <div id="color-grid" class="grid grid-cols-2 gap-2">
-                    <button data-color="#3b82f6" class="w-6 h-6 rounded-full border-2 border-slate-800 scale-110" style="background-color: #3b82f6"></button>
-                    <button data-color="#ef4444" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #ef4444"></button>
-                    <button data-color="#10b981" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #10b981"></button>
-                    <button data-color="#f59e0b" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #f59e0b"></button>
-                    <button data-color="#8b5cf6" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #8b5cf6"></button>
-                    <button data-color="#000000" class="w-6 h-6 rounded-full border-2 border-transparent" style="background-color: #000000"></button>
-                </div>
-
-                <div class="h-px bg-slate-100 mx-1"></div>
-
-                <!-- 브러시 크기 -->
-                <div class="flex flex-col items-center space-y-2 py-2">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase">Size</div>
-                    <input id="brush-size" type="range" min="1" max="20" value="5" class="cursor-pointer accent-blue-600">
-                    <span id="size-display" class="text-xs font-bold text-slate-600">5</span>
-                </div>
-
-                <div class="h-px bg-slate-100 mx-1"></div>
-
-                <button id="btn-clear" class="p-3 rounded-xl text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors" title="전체 삭제">
-                    <i data-lucide="trash-2" class="w-6 h-6"></i>
-                </button>
-            </aside>
-
-            <!-- 칠판 영역 -->
-            <main class="flex-1 relative cursor-crosshair touch-none bg-white overflow-hidden shadow-inner m-4 rounded-2xl border border-slate-200">
-                <canvas id="whiteboard" class="w-full h-full block"></canvas>
-                
-                <div class="absolute bottom-6 right-6 bg-white/80 backdrop-blur-md px-4 py-2 rounded-lg border border-slate-200 shadow-sm pointer-events-none">
-                    <div class="flex items-center space-x-2 text-xs text-slate-500 font-medium">
-                        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                        <span id="status-text">동기화 활성화됨 (0 획)</span>
-                    </div>
-                </div>
-            </main>
-        </div>
-    </div>
-
-    <!-- Firebase SDKs -->
-    <script type="module">
+    <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, doc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, setDoc, addDoc, deleteDoc, writeBatch, onSnapshot, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 1. Firebase Configuration (제공해주신 API Key 적용)
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // --- Firebase Configuration ---
         const firebaseConfig = {
-            apiKey: "AIzaSyBjej7dpiro38Dp8UEA5TAB-yVmXbNTx1Y",
-            authDomain: "eboard-7849c.firebaseapp.com",
-            databaseURL: "https://eboard-7849c-default-rtdb.asia-southeast1.firebasedatabase.app",
-            projectId: "eboard-7849c",
-            storageBucket: "eboard-7849c.firebasestorage.app",
-            messagingSenderId: "458693602522",
-            appId: "1:458693602522:web:e539ece79c690de9c289e3",
-            measurementId: "G-BLBBRP8XPN"
+            apiKey: "AIzaSyDK2VURk2eqaRy52yi2sPZuwYVb2ymmR3I",
+            authDomain: "eboard-95055.firebaseapp.com",
+            databaseURL: "https://eboard-95055-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "eboard-95055",
+            storageBucket: "eboard-95055.firebasestorage.app",
+            messagingSenderId: "927523134440",
+            appId: "1:927523134440:web:4a546e6c565368e283e25d",
+            measurementId: "G-BCPK0YX0E3"
         };
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'whiteboard-html-default';
 
-        // 2. 상태 및 엘리먼트
-        const canvas = document.getElementById('whiteboard');
-        const ctx = canvas.getContext('2d');
-        const loadingOverlay = document.getElementById('loading');
-        const userIdDisplay = document.getElementById('user-id');
-        const statusText = document.getElementById('status-text');
-        
-        const btnPencil = document.getElementById('btn-pencil');
-        const btnEraser = document.getElementById('btn-eraser');
-        const btnClear = document.getElementById('btn-clear');
-        const colorButtons = document.querySelectorAll('#color-grid button');
-        const brushSlider = document.getElementById('brush-size');
-        const sizeDisplay = document.getElementById('size-display');
+        const Icons = {
+            Pencil: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>,
+            Text: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M12 6v14m-5 0h10" /></svg>,
+            Trash: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>,
+            Users: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>,
+            Send: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>,
+            Undo: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+        };
 
-        let user = null;
-        let strokes = [];
-        let isDrawing = false;
-        let currentPath = [];
-        let tool = 'pencil';
-        let color = '#3b82f6';
-        let brushSize = 5;
-
-        // 3. 인증 초기화
-        async function initAuth() {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("인증 에러:", error);
-            }
-        }
-
-        onAuthStateChanged(auth, (currUser) => {
-            if (currUser) {
-                user = currUser;
-                userIdDisplay.textContent = user.uid.substring(0, 8) + '...';
-                loadingOverlay.classList.add('hidden');
-                initSync();
-            }
-        });
-
-        // 4. 실시간 Firestore 동기화
-        function initSync() {
-            if (!user) return;
-            const strokesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'strokes');
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [isLoggedIn, setIsLoggedIn] = useState(false);
+            const [roomInfo, setRoomInfo] = useState({
+                id: typeof __app_id !== 'undefined' ? __app_id : 'vibe-room-1',
+                nickname: localStorage.getItem('eboard_nick') || ''
+            });
             
-            onSnapshot(strokesCollection, (snapshot) => {
-                strokes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                statusText.textContent = `동기화 활성화됨 (${strokes.length} 획)`;
-                redrawCanvas();
-            }, (error) => {
-                console.error("Firestore 동기화 에러:", error);
+            const [currentPage, setCurrentPage] = useState(1);
+            const [data, setData] = useState({ strokes: [], texts: [], messages: [], users: [] });
+            const [ui, setUi] = useState({ 
+                color: '#10b981', 
+                width: 4, 
+                showChat: true, 
+                msg: '', 
+                tool: 'pencil'
             });
-        }
+            const [textInput, setTextInput] = useState({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: '' });
 
-        // 5. 캔버스 로직
-        function resizeCanvas() {
-            const rect = canvas.parentElement.getBoundingClientRect();
-            const dpr = window.devicePixelRatio || 1;
-            canvas.width = rect.width * dpr;
-            canvas.height = rect.height * dpr;
-            ctx.scale(dpr, dpr);
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            redrawCanvas();
-        }
+            const canvasRef = useRef(null);
+            const containerRef = useRef(null);
+            const drawing = useRef({ isDrawing: false, points: [] });
 
-        window.addEventListener('resize', resizeCanvas);
-        window.addEventListener('load', () => {
-            lucide.createIcons();
-            resizeCanvas();
-            initAuth();
-        });
+            // 1. Auth & Login Logic
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (err) { console.error("Auth failed:", err); }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, u => setUser(u));
+                return () => unsubscribe();
+            }, []);
 
-        function redrawCanvas() {
-            const rect = canvas.getBoundingClientRect();
-            ctx.clearRect(0, 0, rect.width, rect.height);
+            // 2. Real-time Data Sync (Rule 1 & 2)
+            useEffect(() => {
+                if (!user || !isLoggedIn) return;
+                
+                // 데이터 경로: /artifacts/{roomId}/public/data/{collection}
+                const base = ['artifacts', roomInfo.id, 'public', 'data'];
+                
+                const sortByTime = (docs) => [...docs].sort((a, b) => (a.timestamp?.toMillis() || 0) - (b.timestamp?.toMillis() || 0));
 
-            strokes.forEach(stroke => {
-                if (!stroke.points || stroke.points.length < 2) return;
-                ctx.beginPath();
-                ctx.strokeStyle = stroke.color;
-                ctx.lineWidth = stroke.width;
-                ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-                for (let i = 1; i < stroke.points.length; i++) {
-                    ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
-                }
-                ctx.stroke();
-            });
-        }
+                const unsubStrokes = onSnapshot(collection(db, ...base, 'strokes'), s => {
+                    setData(p => ({ ...p, strokes: sortByTime(s.docs.map(d => ({ id: d.id, ...d.data() }))) }));
+                });
 
-        // 6. 그리기 로직
-        function getCoords(e) {
-            const rect = canvas.getBoundingClientRect();
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            return {
-                x: clientX - rect.left,
-                y: clientY - rect.top
+                const unsubTexts = onSnapshot(collection(db, ...base, 'texts'), s => {
+                    setData(p => ({ ...p, texts: sortByTime(s.docs.map(d => ({ id: d.id, ...d.data() }))) }));
+                });
+
+                const unsubMessages = onSnapshot(collection(db, ...base, 'messages'), s => {
+                    setData(p => ({ ...p, messages: sortByTime(s.docs.map(d => ({ id: d.id, ...d.data() }))) }));
+                });
+
+                const unsubUsers = onSnapshot(collection(db, ...base, 'users'), s => {
+                    setData(p => ({ ...p, users: s.docs.map(d => ({ id: d.id, ...d.data() })) }));
+                });
+
+                // 본인 접속 정보 기록
+                setDoc(doc(db, ...base, 'users', user.uid), {
+                    name: roomInfo.nickname, uid: user.uid, lastSeen: serverTimestamp()
+                });
+
+                return () => { unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers(); };
+            }, [user, isLoggedIn, roomInfo.id]);
+
+            // 3. Canvas Redraw
+            const redraw = useCallback(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const dpr = window.devicePixelRatio || 1;
+                ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+                const w = canvas.width / dpr;
+                const h = canvas.height / dpr;
+                
+                data.strokes.filter(s => (s.page || 1) === currentPage).forEach(s => {
+                    if (!s.points || s.points.length < 2) return;
+                    ctx.beginPath(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                    ctx.strokeStyle = s.color; ctx.lineWidth = s.width;
+                    ctx.moveTo(s.points[0].x * w, s.points[0].y * h);
+                    s.points.slice(1).forEach(p => ctx.lineTo(p.x * w, p.y * h));
+                    ctx.stroke();
+                });
+
+                data.texts.filter(t => (t.page || 1) === currentPage).forEach(t => {
+                    ctx.fillStyle = t.color;
+                    ctx.font = `${Math.max(14, t.fontSize * 4)}px sans-serif`;
+                    ctx.fillText(t.text, t.x * w, t.y * h);
+                });
+            }, [data.strokes, data.texts, currentPage]);
+
+            useEffect(() => { redraw(); }, [redraw]);
+
+            // 4. Interaction Logic
+            const getPos = (e) => {
+                const rect = canvasRef.current.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                return {
+                    x: (clientX - rect.left) / rect.width,
+                    y: (clientY - rect.top) / rect.height,
+                    rawX: clientX - rect.left, rawY: clientY - rect.top
+                };
             };
-        }
 
-        function startDrawing(e) {
-            isDrawing = true;
-            const { x, y } = getCoords(e);
-            currentPath = [{ x, y }];
-            ctx.beginPath();
-            ctx.moveTo(x, y);
-        }
-
-        function draw(e) {
-            if (!isDrawing) return;
-            const { x, y } = getCoords(e);
-            
-            ctx.lineWidth = brushSize;
-            ctx.strokeStyle = tool === 'eraser' ? '#ffffff' : color;
-            ctx.lineTo(x, y);
-            ctx.stroke();
-            
-            currentPath.push({ x, y });
-        }
-
-        async function stopDrawing() {
-            if (!isDrawing) return;
-            isDrawing = false;
-            
-            if (currentPath.length > 1 && user) {
-                try {
-                    const strokesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'strokes');
-                    await addDoc(strokesCollection, {
-                        points: currentPath,
-                        color: tool === 'eraser' ? '#ffffff' : color,
-                        width: brushSize,
-                        userId: user.uid,
-                        createdAt: Date.now()
-                    });
-                } catch (err) {
-                    console.error("데이터 저장 실패:", err);
+            const drawStart = (e) => {
+                if (!isLoggedIn) return;
+                const pos = getPos(e);
+                if (ui.tool === 'text') {
+                    setTextInput({ active: true, x: pos.x, y: pos.y, rawX: pos.rawX, rawY: pos.rawY, value: '' });
+                    return;
                 }
+                drawing.current.isDrawing = true;
+                drawing.current.points = [{ x: pos.x, y: pos.y }];
+            };
+
+            const drawMove = (e) => {
+                if (!drawing.current.isDrawing) return;
+                const pos = getPos(e);
+                drawing.current.points.push({ x: pos.x, y: pos.y });
+                const ctx = canvasRef.current.getContext('2d');
+                const last = drawing.current.points[drawing.current.points.length - 2];
+                const dpr = window.devicePixelRatio || 1;
+                ctx.beginPath(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                ctx.strokeStyle = ui.color; ctx.lineWidth = ui.width;
+                ctx.moveTo(last.x * (canvasRef.current.width/dpr), last.y * (canvasRef.current.height/dpr));
+                ctx.lineTo(pos.x * (canvasRef.current.width/dpr), pos.y * (canvasRef.current.height/dpr));
+                ctx.stroke();
+            };
+
+            const drawEnd = async () => {
+                if (!drawing.current.isDrawing) return;
+                drawing.current.isDrawing = false;
+                if (drawing.current.points.length < 2) return;
+                await addDoc(collection(db, 'artifacts', roomInfo.id, 'public', 'data', 'strokes'), {
+                    points: drawing.current.points, color: ui.color, width: ui.width,
+                    page: currentPage, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp()
+                });
+            };
+
+            const submitText = async () => {
+                if (!textInput.value.trim()) { setTextInput(p => ({ ...p, active: false })); return; }
+                const payload = {
+                    text: textInput.value, x: textInput.x, y: textInput.y, color: ui.color,
+                    fontSize: ui.width * 2, page: currentPage, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp()
+                };
+                setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: '' });
+                await addDoc(collection(db, 'artifacts', roomInfo.id, 'public', 'data', 'texts'), payload);
+            };
+
+            const sendMessage = async (e) => {
+                e.preventDefault();
+                if (!ui.msg.trim()) return;
+                const m = ui.msg; setUi(p => ({ ...p, msg: '' }));
+                await addDoc(collection(db, 'artifacts', roomInfo.id, 'public', 'data', 'messages'), {
+                    text: m, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp()
+                });
+            };
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                if (!roomInfo.nickname.trim() || !roomInfo.id.trim()) return;
+                localStorage.setItem('eboard_nick', roomInfo.nickname);
+                setIsLoggedIn(true);
+            };
+
+            // 5. Layout Setup
+            useEffect(() => {
+                const resize = () => {
+                    if (!containerRef.current || !canvasRef.current) return;
+                    const { width, height } = containerRef.current.getBoundingClientRect();
+                    const dpr = window.devicePixelRatio || 1;
+                    canvasRef.current.width = width * dpr; canvasRef.current.height = height * dpr;
+                    canvasRef.current.getContext('2d').scale(dpr, dpr);
+                    canvasRef.current.style.width = `${width}px`; canvasRef.current.style.height = `${height}px`;
+                    redraw();
+                };
+                window.addEventListener('resize', resize); resize();
+                return () => window.removeEventListener('resize', resize);
+            }, [redraw]);
+
+            if (!isLoggedIn) {
+                return (
+                    <div className="h-screen w-full flex items-center justify-center bg-gray-900 p-6">
+                        <div className="max-w-md w-full bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl">
+                            <h1 className="text-3xl font-black text-white mb-6 text-center bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 uppercase tracking-tighter">E-Board Login</h1>
+                            <form onSubmit={handleLogin} className="space-y-4">
+                                <div>
+                                    <label className="text-xs text-gray-500 mb-1 block uppercase font-bold">Nickname</label>
+                                    <input type="text" value={roomInfo.nickname} onChange={e => setRoomInfo(p => ({...p, nickname: e.target.value}))} className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition" placeholder="Your Name" required />
+                                </div>
+                                <div>
+                                    <label className="text-xs text-gray-500 mb-1 block uppercase font-bold">Room Name (ID)</label>
+                                    <input type="text" value={roomInfo.id} onChange={e => setRoomInfo(p => ({...p, id: e.target.value}))} className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition" placeholder="Common Room ID" required />
+                                    <p className="text-[10px] text-gray-500 mt-2 px-1">* 상대방과 **동일한 방 이름**을 입력해야 서로의 글이 보입니다.</p>
+                                </div>
+                                <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-emerald-500/20 uppercase">Join Collaborative Session</button>
+                            </form>
+                        </div>
+                    </div>
+                );
             }
-            currentPath = [];
-        }
 
-        // 7. 이벤트 리스너
-        canvas.addEventListener('mousedown', startDrawing);
-        canvas.addEventListener('mousemove', draw);
-        window.addEventListener('mouseup', stopDrawing);
+            return (
+                <div className="h-screen w-full flex flex-col bg-gray-950 text-white overflow-hidden">
+                    <header className="h-14 glass-panel border-b border-gray-800 flex items-center justify-between px-6 z-20">
+                        <div className="flex items-center gap-4">
+                            <span className="font-black text-lg text-emerald-400">BOARD.</span>
+                            <div className="h-6 w-px bg-gray-800 mx-1" />
+                            <div className="flex items-center gap-2 text-[10px] font-mono text-gray-400 bg-gray-900 px-3 py-1 rounded-full border border-gray-800">
+                                <span>ROOM: {roomInfo.id}</span>
+                                <span className="text-emerald-500">● {data.users.length} Online</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} className="p-1 hover:bg-gray-800 rounded text-gray-400">◀</button>
+                            <span className="text-xs font-bold font-mono">PAGE {currentPage}</span>
+                            <button onClick={() => setCurrentPage(p => p + 1)} className="p-1 hover:bg-gray-800 rounded text-gray-400">▶</button>
+                            <div className="h-6 w-px bg-gray-800 mx-1" />
+                            <button onClick={() => setUi(p => ({...p, showChat: !p.showChat}))} className={`p-2 rounded-lg transition ${ui.showChat ? 'bg-emerald-500/20 text-emerald-400' : 'hover:bg-gray-800'}`}>💬</button>
+                        </div>
+                    </header>
 
-        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDrawing(e); }, { passive: false });
-        canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); }, { passive: false });
-        canvas.addEventListener('touchend', stopDrawing);
+                    <div className="flex-1 flex relative">
+                        <div ref={containerRef} className="flex-1 relative overflow-hidden bg-[radial-gradient(#1f2937_1px,transparent_1px)] [background-size:24px_24px]">
+                            <canvas ref={canvasRef} onMouseDown={drawStart} onMouseMove={drawMove} onMouseUp={drawEnd} onMouseLeave={drawEnd} onTouchStart={drawStart} onTouchMove={drawMove} onTouchEnd={drawEnd} className="block" />
+                            
+                            {textInput.active && (
+                                <input ref={textRef} type="text" className="text-input-overlay" style={{ left: textInput.rawX, top: textInput.rawY - (ui.width * 2), color: ui.color, fontSize: `${Math.max(14, ui.width * 4)}px`, minWidth: '120px' }} value={textInput.value} onChange={e => setTextInput(p => ({ ...p, value: e.target.value }))} onBlur={submitText} onKeyDown={e => e.key === 'Enter' && submitText()} autoFocus />
+                            )}
 
-        // UI 컨트롤
-        btnPencil.addEventListener('click', () => {
-            tool = 'pencil';
-            btnPencil.classList.add('bg-blue-100', 'text-blue-600', 'shadow-inner');
-            btnPencil.classList.remove('hover:bg-slate-100', 'text-slate-400');
-            btnEraser.classList.remove('bg-blue-100', 'text-blue-600', 'shadow-inner');
-            btnEraser.classList.add('hover:bg-slate-100', 'text-slate-400');
-        });
+                            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 glass-panel border border-gray-700 px-6 py-3 rounded-3xl flex items-center gap-6 shadow-2xl">
+                                <div className="flex gap-2 p-1 bg-gray-900/50 rounded-xl">
+                                    <button onClick={() => setUi(p => ({ ...p, tool: 'pencil' }))} className={`p-2 rounded-lg transition ${ui.tool === 'pencil' ? 'bg-emerald-500' : 'text-gray-400 hover:text-white'}`}><Icons.Pencil /></button>
+                                    <button onClick={() => setUi(p => ({ ...p, tool: 'text' }))} className={`p-2 rounded-lg transition ${ui.tool === 'text' ? 'bg-emerald-500' : 'text-gray-400 hover:text-white'}`}><Icons.Text /></button>
+                                </div>
+                                <div className="flex gap-3">
+                                    {['#10b981', '#ef4444', '#3b82f6', '#ffffff'].map(c => (
+                                        <button key={c} onClick={() => setUi(p => ({ ...p, color: c }))} className={`w-6 h-6 rounded-full border-2 ${ui.color === c ? 'border-white scale-110 ring-4 ring-white/10' : 'border-transparent opacity-60'}`} style={{ backgroundColor: c }} />
+                                    ))}
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={undoLast} className="p-2 hover:bg-gray-700 rounded-xl text-gray-400 hover:text-white"><Icons.Undo /></button>
+                                    <button onClick={clearPage} className="p-2 hover:bg-red-500/20 rounded-xl text-gray-400 hover:text-red-400"><Icons.Trash /></button>
+                                </div>
+                            </div>
+                        </div>
 
-        btnEraser.addEventListener('click', () => {
-            tool = 'eraser';
-            btnEraser.classList.add('bg-blue-100', 'text-blue-600', 'shadow-inner');
-            btnEraser.classList.remove('hover:bg-slate-100', 'text-slate-400');
-            btnPencil.classList.remove('bg-blue-100', 'text-blue-600', 'shadow-inner');
-            btnPencil.classList.add('hover:bg-slate-100', 'text-slate-400');
-        });
+                        <div className={`transition-all duration-300 ${ui.showChat ? 'w-80 border-l border-gray-800' : 'w-0 overflow-hidden'} flex flex-col glass-panel`}>
+                            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                                {data.messages.map((m, i) => (
+                                    <div key={m.id || i} className={`flex flex-col ${m.userId === user?.uid ? 'items-end' : 'items-start'}`}>
+                                        <span className="text-[10px] text-gray-500 mb-1 px-1 font-mono uppercase">{m.userName}</span>
+                                        <div className={`max-w-[90%] px-3 py-2 text-sm rounded-2xl ${m.userId === user?.uid ? 'bg-emerald-600 text-white rounded-tr-none' : 'bg-gray-800 text-gray-200 rounded-tl-none'}`}>{m.text}</div>
+                                    </div>
+                                ))}
+                            </div>
+                            <form onSubmit={sendMessage} className="p-4 bg-gray-900 border-t border-gray-800 flex gap-2">
+                                <input type="text" value={ui.msg} onChange={e => setUi(p => ({ ...p, msg: e.target.value }))} placeholder="Chat..." className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500" />
+                                <button type="submit" disabled={!ui.msg.trim()} className="p-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl transition disabled:opacity-50"><Icons.Send /></button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
 
-        colorButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                color = btn.getAttribute('data-color');
-                tool = 'pencil';
-                colorButtons.forEach(b => b.classList.remove('border-slate-800', 'scale-110'));
-                btn.classList.add('border-slate-800', 'scale-110');
-                btnPencil.click();
-            });
-        });
-
-        brushSlider.addEventListener('input', (e) => {
-            brushSize = parseInt(e.target.value);
-            sizeDisplay.textContent = brushSize;
-        });
-
-        btnClear.addEventListener('click', async () => {
-            if (!confirm("정말로 모든 내용을 삭제하시겠습니까?")) return;
-            try {
-                const strokesCollection = collection(db, 'artifacts', appId, 'public', 'data', 'strokes');
-                const snapshot = await getDocs(strokesCollection);
-                const batch = writeBatch(db);
-                snapshot.docs.forEach(d => batch.delete(d.ref));
-                await batch.commit();
-            } catch (err) {
-                console.error("전체 삭제 에러:", err);
-            }
-        });
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
     </script>
 </body>
 </html>
