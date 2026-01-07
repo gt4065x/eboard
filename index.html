@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Live Collab E-Board</title>
+
+  <!-- favicon 404 방지 -->
+  <link rel="icon" href="data:," />
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -45,8 +49,7 @@
       query, orderBy, limit,
       getDoc,
       writeBatch,
-      runTransaction,
-      Timestamp
+      runTransaction
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     const h = React.createElement;
@@ -79,6 +82,7 @@
       }, [ms]);
     }
 
+    // ✅ children은 반드시 React children으로 전달되어야 함
     const IconBtn = ({ title, onClick, active, disabled, children, className }) => (
       h("button", {
         title, onClick, disabled,
@@ -138,66 +142,51 @@
 
       // Auth 초기화
       useEffect(() => {
-        if (!auth) return;
-        
         const doAuth = async () => {
-          try {
-            await signInAnonymously(auth);
-          } catch (e) {
-            console.error("Auth error:", e);
-          }
+          try { await signInAnonymously(auth); }
+          catch (e) { console.error("Auth error:", e); }
         };
-
         doAuth();
 
         const unsub = onAuthStateChanged(auth, (u) => {
           setUser(u);
           setAuthReady(!!u);
         });
-
         return () => unsub();
       }, []);
 
       // Lobby 리스너
       useEffect(() => {
-        if (!authReady || !db) return;
-        
-        try {
-          const qLobby = query(
-            collection(db, "artifacts", LOBBY_ID, "public", "data", "active_rooms"),
-            orderBy("lastActivity", "desc"),
-            limit(50)
-          );
+        if (!authReady) return;
 
-          const unsubLobby = onSnapshot(
-            qLobby,
-            (snap) => {
-              const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-              
-              const rooms = snap.docs
-                .map(d => ({ id: d.id, ...d.data() }))
-                .filter(r => {
-                  const status = r.status || "active";
-                  const lastAct = r.lastActivity?.toMillis?.() || 0;
-                  return status === "active" && lastAct >= cutoff;
-                });
+        const qLobby = query(
+          collection(db, "artifacts", LOBBY_ID, "public", "data", "active_rooms"),
+          orderBy("lastActivity", "desc"),
+          limit(50)
+        );
 
-              setActiveRooms(rooms);
-            },
-            (err) => console.error("Lobby error:", err)
-          );
+        const unsubLobby = onSnapshot(
+          qLobby,
+          (snap) => {
+            const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+            const rooms = snap.docs
+              .map(d => ({ id: d.id, ...d.data() }))
+              .filter(r => {
+                const status = r.status || "active";
+                const lastAct = r.lastActivity?.toMillis?.() || 0;
+                return status === "active" && lastAct >= cutoff;
+              });
+            setActiveRooms(rooms);
+          },
+          (err) => console.error("Lobby error:", err)
+        );
 
-          return () => unsubLobby();
-        } catch (e) {
-          console.error("Lobby listener error:", e);
-        }
+        return () => unsubLobby();
       }, [authReady]);
 
       const ensureRoomMetaOwner = useCallback(async (roomId, currentUid) => {
-        if (!db) return;
-        
+        const metaRef = doc(db, "artifacts", roomId, "public", "data", "room_meta", "meta");
         try {
-          const metaRef = doc(db, "artifacts", roomId, "public", "data", "room_meta", "meta");
           await runTransaction(db, async (tx) => {
             const snap = await tx.get(metaRef);
             if (!snap.exists()) {
@@ -209,23 +198,17 @@
             }
           });
         } catch (e) {
-          console.error('ensureRoomMetaOwner error:', e);
+          console.error("ensureRoomMetaOwner error:", e);
         }
       }, []);
 
       useEffect(() => {
-        if (!isLoggedIn || !roomInfo.id || !db) return;
+        if (!isLoggedIn || !roomInfo.id) return;
 
         const metaRef = doc(db, "artifacts", roomInfo.id, "public", "data", "room_meta", "meta");
         const unsub = onSnapshot(
           metaRef,
-          (snap) => {
-            if (snap.exists()) {
-              setOwnerUid(snap.data().ownerUid || null);
-            } else {
-              setOwnerUid(null);
-            }
-          },
+          (snap) => setOwnerUid(snap.exists() ? (snap.data().ownerUid || null) : null),
           (err) => console.error("Meta error:", err)
         );
 
@@ -233,14 +216,10 @@
       }, [isLoggedIn, roomInfo.id]);
 
       useEffect(() => {
-        if (!user || !isLoggedIn || !roomInfo.id || !db) return;
+        if (!user || !isLoggedIn || !roomInfo.id) return;
 
         const base = ["artifacts", roomInfo.id, "public", "data"];
-        const sortByTime = (arr) => {
-          const copy = [...arr];
-          copy.sort((a, b) => (a.timestamp?.toMillis?.() || 0) - (b.timestamp?.toMillis?.() || 0));
-          return copy;
-        };
+        const sortByTime = (arr) => [...arr].sort((a, b) => (a.timestamp?.toMillis?.() || 0) - (b.timestamp?.toMillis?.() || 0));
 
         const unsubStrokes = onSnapshot(
           collection(db, ...base, "strokes"),
@@ -278,24 +257,17 @@
           { merge: true }
         ).catch(e => console.error("Lobby update error:", e));
 
-        return () => {
-          unsubStrokes();
-          unsubTexts();
-          unsubMessages();
-          unsubUsers();
-        };
+        return () => { unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers(); };
       }, [user, isLoggedIn, roomInfo.id, roomInfo.nickname]);
 
       useInterval(async () => {
-        if (!user || !isLoggedIn || !roomInfo.id || !db) return;
-        
+        if (!user || !isLoggedIn || !roomInfo.id) return;
         try {
           await setDoc(
             doc(db, "artifacts", roomInfo.id, "public", "data", "users", user.uid),
             { lastSeen: serverTimestamp() },
             { merge: true }
           );
-
           await setDoc(
             doc(db, "artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id),
             { lastActivity: serverTimestamp(), status: "active" },
@@ -335,9 +307,7 @@
             ctx.lineWidth = s.width || 4;
 
             ctx.moveTo(s.points[0].x * wCSS, s.points[0].y * hCSS);
-            for (let i = 1; i < s.points.length; i++) {
-              ctx.lineTo(s.points[i].x * wCSS, s.points[i].y * hCSS);
-            }
+            for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x * wCSS, s.points[i].y * hCSS);
             ctx.stroke();
           });
 
@@ -362,12 +332,16 @@
 
       const getPos = (e) => {
         const canvas = canvasRef.current;
+        if (!canvas) return { x: 0, y: 0, rawX: 0, rawY: 0 };
+
         const rect = canvas.getBoundingClientRect();
         const touch = e.touches && e.touches[0];
         const clientX = touch ? touch.clientX : e.clientX;
         const clientY = touch ? touch.clientY : e.clientY;
+
         const x = (clientX - rect.left) / rect.width;
         const y = (clientY - rect.top) / rect.height;
+
         return {
           x: Math.max(0, Math.min(1, x)),
           y: Math.max(0, Math.min(1, y)),
@@ -382,12 +356,7 @@
 
         if (ui.tool === "text") {
           if (!canText) return;
-          setTextInput({
-            active: true,
-            x: pos.x, y: pos.y,
-            rawX: pos.rawX, rawY: pos.rawY,
-            value: ""
-          });
+          setTextInput({ active: true, x: pos.x, y: pos.y, rawX: pos.rawX, rawY: pos.rawY, value: "" });
           return;
         }
 
@@ -399,6 +368,8 @@
       const drawMove = (e) => {
         if (!drawingRef.current.isDrawing) return;
         const canvas = canvasRef.current;
+        if (!canvas) return;
+
         const ctx = canvas.getContext("2d");
         const pos = getPos(e);
         const pts = drawingRef.current.points;
@@ -419,7 +390,7 @@
       };
 
       const drawEnd = async () => {
-        if (!drawingRef.current.isDrawing || !db) return;
+        if (!drawingRef.current.isDrawing) return;
         drawingRef.current.isDrawing = false;
 
         const pts = drawingRef.current.points;
@@ -428,15 +399,7 @@
         try {
           await addDoc(
             collection(db, "artifacts", roomInfo.id, "public", "data", "strokes"),
-            {
-              points: pts,
-              color: ui.color,
-              width: ui.width,
-              page: currentPage,
-              userId: user.uid,
-              userName: roomInfo.nickname,
-              timestamp: serverTimestamp()
-            }
+            { points: pts, color: ui.color, width: ui.width, page: currentPage, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp() }
           );
         } catch (e) {
           console.error("Stroke save error:", e);
@@ -447,23 +410,12 @@
       const submitText = async () => {
         const v = (textInput.value || "").trim();
         setTextInput(p => ({ ...p, active: false }));
-
-        if (!v || !canText || !db) return;
+        if (!v || !canText) return;
 
         try {
           await addDoc(
             collection(db, "artifacts", roomInfo.id, "public", "data", "texts"),
-            {
-              text: v,
-              x: textInput.x,
-              y: textInput.y,
-              color: ui.color,
-              fontSize: Math.max(16, ui.width * 4),
-              page: currentPage,
-              userId: user.uid,
-              userName: roomInfo.nickname,
-              timestamp: serverTimestamp()
-            }
+            { text: v, x: textInput.x, y: textInput.y, color: ui.color, fontSize: Math.max(16, ui.width * 4), page: currentPage, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp() }
           );
         } catch (e) {
           console.error("Text save error:", e);
@@ -483,24 +435,15 @@
       };
 
       const endRoom = async () => {
-        if (!isOwner || !db) return;
+        if (!isOwner) return;
         const ok = confirm("회의를 종료할까요?");
         if (!ok) return;
 
         try {
           const batch = writeBatch(db);
-          batch.set(
-            doc(db, "artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id),
-            { status: "closed", endedAt: serverTimestamp() },
-            { merge: true }
-          );
-          batch.set(
-            doc(db, "artifacts", roomInfo.id, "public", "data", "room_meta", "meta"),
-            { status: "closed", endedAt: serverTimestamp() },
-            { merge: true }
-          );
+          batch.set(doc(db, "artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id), { status: "closed", endedAt: serverTimestamp() }, { merge: true });
+          batch.set(doc(db, "artifacts", roomInfo.id, "public", "data", "room_meta", "meta"), { status: "closed", endedAt: serverTimestamp() }, { merge: true });
           await batch.commit();
-          
           alert("회의가 종료되었습니다.");
           window.location.reload();
         } catch (e) {
@@ -518,16 +461,9 @@
         e.preventDefault();
         const nick = (roomInfo.nickname || "").trim();
         const rid = (roomInfo.id || "").trim();
-        
-        if (!nick || !rid) {
-          alert("닉네임과 방 이름을 입력하세요!");
-          return;
-        }
 
-        if (!user || !db) {
-          alert("인증 대기 중...");
-          return;
-        }
+        if (!nick || !rid) { alert("닉네임과 방 이름을 입력하세요!"); return; }
+        if (!user) { alert("인증 대기 중..."); return; }
 
         localStorage.setItem("eboard_nick", nick);
 
@@ -540,38 +476,25 @@
             return;
           }
 
-          await setDoc(lobbyRef, {
-            roomId: rid,
-            status: "active",
-            createdAt: serverTimestamp(),
-            lastActivity: serverTimestamp()
-          }, { merge: true });
-
+          await setDoc(lobbyRef, { roomId: rid, status: "active", createdAt: serverTimestamp(), lastActivity: serverTimestamp() }, { merge: true });
           await ensureRoomMetaOwner(rid, user.uid);
-          
           setIsLoggedIn(true);
-        } catch (e) {
-          console.error("Login error:", e);
-          alert(`입장 실패!\n\n${e.message}\n\n보안 규칙을 확인하세요.`);
+        } catch (e2) {
+          console.error("Login error:", e2);
+          alert(`입장 실패!\n\n${e2.message}\n\n보안 규칙을 확인하세요.`);
         }
       };
 
       const sendChat = async (e) => {
         e.preventDefault();
         const v = (ui.msg || "").trim();
-        if (!v || !db) return;
+        if (!v) return;
 
         setUi(p => ({ ...p, msg: "" }));
 
         try {
-          await addDoc(
-            collection(db, "artifacts", roomInfo.id, "public", "data", "messages"),
-            {
-              text: v,
-              userId: user.uid,
-              userName: roomInfo.nickname,
-              timestamp: serverTimestamp()
-            }
+          await addDoc(collection(db, "artifacts", roomInfo.id, "public", "data", "messages"),
+            { text: v, userId: user.uid, userName: roomInfo.nickname, timestamp: serverTimestamp() }
           );
         } catch (e2) {
           console.error("Chat error:", e2);
@@ -587,7 +510,7 @@
               h("div", null,
                 h("h1", { className: "text-3xl font-black text-white bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 uppercase tracking-tighter" }, "E-Board Collab"),
                 h("p", { className: "text-gray-400 text-sm mt-1" }, "실시간 협업 칠판"),
-                !authReady ? h("p", { className: "text-yellow-400 text-xs mt-2 animate-pulse" }, "⏳ 인증 준비 중...") : 
+                !authReady ? h("p", { className: "text-yellow-400 text-xs mt-2 animate-pulse" }, "⏳ 인증 준비 중...") :
                              h("p", { className: "text-emerald-400 text-xs mt-2" }, "✓ 준비 완료")
               ),
 
@@ -684,15 +607,16 @@
           ),
 
           h("div", { className: "flex items-center gap-2" },
-            IconBtn({ title: "참석자", onClick: () => setUi(p => ({ ...p, showUsers: !p.showUsers })), active: ui.showUsers }, "👥"),
+            /* ✅ IconBtn 올바른 사용 */
+            h(IconBtn, { title: "참석자", onClick: () => setUi(p => ({ ...p, showUsers: !p.showUsers })), active: ui.showUsers }, "👥"),
             h("div", { className: "h-6 w-px bg-gray-800" }),
-            IconBtn({ title: "이전", onClick: () => setCurrentPage(p => Math.max(1, p - 1)), disabled: currentPage === 1 }, "◀"),
+            h(IconBtn, { title: "이전", onClick: () => setCurrentPage(p => Math.max(1, p - 1)), disabled: currentPage === 1 }, "◀"),
             h("span", { className: "text-xs font-mono px-2" }, `P.${currentPage}`),
-            IconBtn({ title: "다음", onClick: () => setCurrentPage(p => p + 1) }, "▶"),
+            h(IconBtn, { title: "다음", onClick: () => setCurrentPage(p => p + 1) }, "▶"),
             h("div", { className: "h-6 w-px bg-gray-800" }),
-            IconBtn({ title: "채팅", onClick: () => setUi(p => ({ ...p, showChat: !p.showChat })), active: ui.showChat }, "💬"),
-            IconBtn({ title: "저장", onClick: exportBoardAsImage }, "🖼️"),
-            isOwner ? IconBtn({ title: "종료", onClick: endRoom, className: "!text-red-300 hover:!bg-red-500/20" }, "END") : null,
+            h(IconBtn, { title: "채팅", onClick: () => setUi(p => ({ ...p, showChat: !p.showChat })), active: ui.showChat }, "💬"),
+            h(IconBtn, { title: "저장", onClick: exportBoardAsImage }, "🖼️"),
+            isOwner ? h(IconBtn, { title: "종료", onClick: endRoom, className: "!text-red-300 hover:!bg-red-500/20" }, "END") : null,
             h("button", {
               onClick: () => { if (confirm("나가시겠습니까?")) window.location.reload(); },
               className: "p-2 text-xs text-gray-500 hover:text-white transition"
@@ -821,8 +745,14 @@
       );
     }
 
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(h(App));
+    // ✅ root 존재 가드 (혹시 DOM이 바뀌는 환경에서도 안전)
+    const rootEl = document.getElementById("root");
+    if (!rootEl) {
+      console.error("#root not found");
+    } else {
+      const root = ReactDOM.createRoot(rootEl);
+      root.render(h(App));
+    }
   </script>
 </body>
 </html>
