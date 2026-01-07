@@ -24,15 +24,15 @@
 
     .text-input-overlay {
       position: absolute;
-      background: transparent;
+      background: rgba(17, 24, 39, 0.6);
       border: 1px dashed #10b981;
       color: white;
       outline: none;
-      padding: 2px 6px;
+      padding: 4px 8px;
       font-family: sans-serif;
       z-index: 60;
       white-space: nowrap;
-      border-radius: 8px;
+      border-radius: 10px;
     }
     .room-card:hover { transform: translateY(-2px); }
   </style>
@@ -40,14 +40,13 @@
 <body>
   <div id="root"></div>
 
-  <!-- App (NO Babel / NO JSX) -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import {
       getFirestore,
       collection, doc,
-      setDoc, addDoc, deleteDoc,
+      setDoc, addDoc,
       onSnapshot,
       serverTimestamp,
       query, where, orderBy, limit,
@@ -64,29 +63,24 @@
     // Firebase Config
     // -----------------------------
     const firebaseConfig = {
-      apiKey: "AIzaSyBjej7dpiro38Dp8UEA5TAB-yVmXbNTx1Y",
-  authDomain: "eboard-7849c.firebaseapp.com",
-  databaseURL: "https://eboard-7849c-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "eboard-7849c",
-  storageBucket: "eboard-7849c.firebasestorage.app",
-  messagingSenderId: "458693602522",
-  appId: "1:458693602522:web:046c69a9add5a113c289e3",
-  measurementId: "G-9JDXZVK1E3"
+      apiKey: "AIzaSyDK2VURk2eqaRy52yi2sPZuwYVb2ymmR3I",
+      authDomain: "eboard-95055.firebaseapp.com",
+      databaseURL: "https://eboard-95055-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "eboard-95055",
+      storageBucket: "eboard-95055.firebasestorage.app",
+      messagingSenderId: "927523134440",
+      appId: "1:927523134440:web:4a546e6c565368e283e25d",
+      measurementId: "G-BCPK0YX0E3"
     };
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
 
-    // Lobby ID (고정)
+    // Lobby ID
     const LOBBY_ID = "eboard-lobby-v1";
-
-    // 환경 제공 토큰(있으면 사용)
     const globalAppId = (typeof __app_id !== "undefined" && __app_id) ? __app_id : LOBBY_ID;
 
-    // -----------------------------
-    // Small helpers
-    // -----------------------------
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const nowISO = () => new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
 
@@ -100,9 +94,6 @@
       }, [ms]);
     }
 
-    // -----------------------------
-    // Icons (simple text icons to keep light)
-    // -----------------------------
     const IconBtn = ({ title, onClick, active, disabled, children, className }) => (
       h("button", {
         title,
@@ -116,9 +107,6 @@
       }, children)
     );
 
-    // -----------------------------
-    // App Component
-    // -----------------------------
     function App() {
       const [user, setUser] = useState(null);
       const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -144,7 +132,7 @@
         width: 4,
         showChat: true,
         msg: "",
-        tool: "pencil", // pencil | text
+        tool: "text", // default text (참석자도 가능)
         showUsers: false
       });
 
@@ -157,17 +145,18 @@
 
       const [ownerUid, setOwnerUid] = useState(null);
       const isOwner = useMemo(() => !!(user && ownerUid && user.uid === ownerUid), [user, ownerUid]);
-      const canEdit = isOwner; // ✅ 방장 권한부여 기능 제외: 방장만 편집 가능, 참석자는 뷰 전용
+
+      // 권한 정책(요청사항):
+      // - 참석자: 텍스트 가능
+      // - 방장: 텍스트 + 펜 + END ROOM
+      const canText = true;
+      const canDraw = isOwner;
 
       const canvasRef = useRef(null);
-      const containerRef = useRef(null);
       const textRef = useRef(null);
-
       const drawingRef = useRef({ isDrawing: false, points: [] });
 
-      // -----------------------------
       // 1) Auth
-      // -----------------------------
       useEffect(() => {
         (async () => {
           try {
@@ -185,22 +174,25 @@
         return () => unsub();
       }, []);
 
-      // -----------------------------
-      // 2) Lobby listener (최근 24시간 + active)
-      // -----------------------------
+      // 2) Lobby listener (인덱스 우회 버전)
+      // - lastActivity >= cutoff
+      // - orderBy(lastActivity desc)
+      // - (클라이언트에서 status=="active" 필터)
       useEffect(() => {
         const cutoff = Timestamp.fromMillis(Date.now() - 24 * 60 * 60 * 1000);
 
         const qLobby = query(
           collection(db, "artifacts", globalAppId, "public", "data", "active_rooms"),
-          where("status", "==", "active"),
           where("lastActivity", ">=", cutoff),
           orderBy("lastActivity", "desc"),
-          limit(50)
+          limit(80)
         );
 
         const unsubLobby = onSnapshot(qLobby, (snap) => {
-          const rooms = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          const rooms = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(r => (r.status || "active") === "active");
+
           setActiveRooms(rooms);
         }, (err) => {
           console.error("Lobby onSnapshot error:", err);
@@ -209,9 +201,7 @@
         return () => unsubLobby();
       }, []);
 
-      // -----------------------------
-      // 3) Ensure room_meta/meta (owner 지정 1회)
-      // -----------------------------
+      // 3) Ensure room_meta/meta (첫 생성자 = 방장)
       const ensureRoomMetaOwner = useCallback(async (roomId, currentUid) => {
         const metaRef = doc(db, "artifacts", roomId, "public", "data", "room_meta", "meta");
         await runTransaction(db, async (tx) => {
@@ -226,27 +216,20 @@
         });
       }, []);
 
-      // -----------------------------
-      // 4) Room meta subscribe (ownerUid + status)
-      // -----------------------------
+      // 4) room_meta subscribe (ownerUid)
       useEffect(() => {
         if (!isLoggedIn || !roomInfo.id) return;
 
         const metaRef = doc(db, "artifacts", roomInfo.id, "public", "data", "room_meta", "meta");
         const unsub = onSnapshot(metaRef, (snap) => {
-          if (snap.exists()) {
-            setOwnerUid(snap.data().ownerUid || null);
-          } else {
-            setOwnerUid(null);
-          }
+          if (snap.exists()) setOwnerUid(snap.data().ownerUid || null);
+          else setOwnerUid(null);
         }, (err) => console.error("meta onSnapshot error:", err));
 
         return () => unsub();
       }, [isLoggedIn, roomInfo.id]);
 
-      // -----------------------------
-      // 5) Room data sync (strokes/texts/messages/users)
-      // -----------------------------
+      // 5) Room data sync
       useEffect(() => {
         if (!user || !isLoggedIn || !roomInfo.id) return;
 
@@ -277,34 +260,27 @@
           setData(p => ({ ...p, users: rows }));
         }, (err) => console.error("users onSnapshot error:", err));
 
-        // ✅ 입장 등록(users/{uid})
+        // 참석자 등록/갱신
         setDoc(doc(db, ...base, "users", user.uid), {
           uid: user.uid,
           name: roomInfo.nickname,
           lastSeen: serverTimestamp()
         }, { merge: true }).catch(e => console.error("set users failed:", e));
 
-        // ✅ 로비 갱신 (active)
+        // 로비 갱신(active)
         setDoc(
           doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id),
-          {
-            roomId: roomInfo.id,
-            status: "active",
-            lastActivity: serverTimestamp(),
-          },
+          { roomId: roomInfo.id, status: "active", lastActivity: serverTimestamp() },
           { merge: true }
         ).catch(e => console.error("set lobby failed:", e));
 
         return () => { unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers(); };
       }, [user, isLoggedIn, roomInfo.id]);
 
-      // -----------------------------
-      // 6) Heartbeat: active일 때만 lastActivity 갱신
-      // -----------------------------
+      // 6) Heartbeat
       useInterval(async () => {
         if (!user || !isLoggedIn || !roomInfo.id) return;
         try {
-          // 내 lastSeen 갱신
           await setDoc(
             doc(db, "artifacts", roomInfo.id, "public", "data", "users", user.uid),
             { lastSeen: serverTimestamp() },
@@ -322,16 +298,13 @@
         }
       }, isLoggedIn ? 15000 : null);
 
-      // -----------------------------
-      // 7) Canvas resize + redraw
-      // -----------------------------
+      // 7) Canvas redraw
       const redraw = useCallback(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext("2d");
         const dpr = window.devicePixelRatio || 1;
 
-        // reset transform to avoid cumulative scale
         ctx.setTransform(1, 0, 0, 1, 0, 0);
 
         const wCSS = canvas.clientWidth;
@@ -344,7 +317,7 @@
         ctx.scale(dpr, dpr);
         ctx.clearRect(0, 0, wCSS, hCSS);
 
-        // Draw strokes
+        // strokes
         data.strokes
           .filter(s => (s.page || 1) === currentPage)
           .forEach(s => {
@@ -363,12 +336,12 @@
             ctx.stroke();
           });
 
-        // Draw texts
+        // texts
         data.texts
           .filter(t => (t.page || 1) === currentPage)
           .forEach(t => {
             ctx.fillStyle = t.color || "#ffffff";
-            const px = Math.max(14, (t.fontSize || 16));
+            const px = Math.max(14, (t.fontSize || 18));
             ctx.font = `${px}px sans-serif`;
             ctx.fillText(t.text || "", (t.x || 0) * wCSS, (t.y || 0) * hCSS);
           });
@@ -377,16 +350,13 @@
       useEffect(() => {
         const onResize = () => redraw();
         window.addEventListener("resize", onResize);
-        // first paint after mount
         setTimeout(() => redraw(), 0);
         return () => window.removeEventListener("resize", onResize);
       }, [redraw]);
 
       useEffect(() => { redraw(); }, [redraw]);
 
-      // -----------------------------
       // 8) Input helpers
-      // -----------------------------
       const getPos = (e) => {
         const canvas = canvasRef.current;
         const rect = canvas.getBoundingClientRect();
@@ -396,8 +366,8 @@
         const x = (clientX - rect.left) / rect.width;
         const y = (clientY - rect.top) / rect.height;
         return {
-          x: clamp(x, 0, 1),
-          y: clamp(y, 0, 1),
+          x: Math.max(0, Math.min(1, x)),
+          y: Math.max(0, Math.min(1, y)),
           rawX: clientX - rect.left,
           rawY: clientY - rect.top
         };
@@ -405,10 +375,11 @@
 
       const drawStart = (e) => {
         if (!isLoggedIn) return;
-        if (!canEdit) return; // ✅ 참석자는 보기만
         const pos = getPos(e);
 
+        // 텍스트는 누구나 가능
         if (ui.tool === "text") {
+          if (!canText) return;
           setTextInput({
             active: true,
             x: pos.x, y: pos.y,
@@ -417,6 +388,9 @@
           });
           return;
         }
+
+        // 펜은 방장만
+        if (!canDraw) return;
 
         drawingRef.current.isDrawing = true;
         drawingRef.current.points = [{ x: pos.x, y: pos.y }];
@@ -430,7 +404,6 @@
         const pts = drawingRef.current.points;
         pts.push({ x: pos.x, y: pos.y });
 
-        // draw incremental
         const wCSS = canvas.clientWidth;
         const hCSS = canvas.clientHeight;
 
@@ -482,7 +455,7 @@
         setTextInput(p => ({ ...p, active: false }));
 
         if (!v) return;
-        if (!canEdit) return;
+        if (!canText) return;
 
         try {
           await addDoc(
@@ -492,7 +465,7 @@
               x: textInput.x,
               y: textInput.y,
               color: ui.color,
-              fontSize: Math.max(14, ui.width * 4),
+              fontSize: Math.max(16, ui.width * 4),
               page: currentPage,
               userId: user.uid,
               userName: roomInfo.nickname,
@@ -511,13 +484,10 @@
         }
       };
 
-      // -----------------------------
       // 9) Save PNG
-      // -----------------------------
       const exportBoardAsImage = () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-        // ensure latest redraw before export
         redraw();
         const url = canvas.toDataURL("image/png");
         const a = document.createElement("a");
@@ -526,9 +496,7 @@
         a.click();
       };
 
-      // -----------------------------
       // 10) End Room (방장)
-      // -----------------------------
       const endRoom = async () => {
         if (!isOwner) return;
         const ok = confirm("회의를 종료할까요? (로비에서 방이 숨김 처리됩니다)");
@@ -561,9 +529,7 @@
         }
       };
 
-      // -----------------------------
-      // 11) Login / Create room (closed 방 재입장 차단)
-      // -----------------------------
+      // 11) Login / Create room (closed 방 차단)
       const generateNewRoomId = () => {
         const randomId = "Room-" + Math.random().toString(36).substring(2, 7).toUpperCase();
         setRoomInfo(p => ({ ...p, id: randomId }));
@@ -598,7 +564,6 @@
             }, { merge: true });
           }
 
-          // ✅ room_meta/meta는 “첫 생성자 = 방장”
           if (user?.uid) {
             await ensureRoomMetaOwner(rid, user.uid);
           }
@@ -606,11 +571,10 @@
           setIsLoggedIn(true);
         } catch (e2) {
           console.error("handleLogin failed:", e2);
-          alert("입장 실패. Firestore 활성화/규칙/인덱스를 확인하세요.");
+          alert("입장 실패. Firestore/규칙/인덱스를 확인하세요.");
         }
       };
 
-      // user가 로그인 이후 확보되면 meta owner 보강(늦게 user가 잡히는 경우)
       useEffect(() => {
         if (!isLoggedIn) return;
         if (!user?.uid) return;
@@ -618,9 +582,7 @@
         ensureRoomMetaOwner(roomInfo.id, user.uid).catch(e => console.error("ensureRoomMetaOwner failed:", e));
       }, [isLoggedIn, user, roomInfo.id]);
 
-      // -----------------------------
       // 12) Chat send
-      // -----------------------------
       const sendChat = async (e) => {
         e.preventDefault();
         const v = (ui.msg || "").trim();
@@ -657,11 +619,10 @@
         return h("div", { className: "h-screen w-full flex items-center justify-center bg-gray-900 p-6 overflow-y-auto" },
           h("div", { className: "max-w-5xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 items-start" },
 
-            // Left: login
             h("div", { className: "bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl space-y-6" },
               h("div", null,
                 h("h1", { className: "text-3xl font-black text-white bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 uppercase tracking-tighter" }, "E-Board Collab"),
-                h("p", { className: "text-gray-400 text-sm mt-1" }, "실시간 협업 칠판 (참석자는 기본 뷰 / 방장만 편집)")
+                h("p", { className: "text-gray-400 text-sm mt-1" }, "실시간 협업 칠판 (참석자: 텍스트만 / 방장: 펜+텍스트)")
               ),
 
               h("form", { onSubmit: handleLogin, className: "space-y-4" },
@@ -697,7 +658,7 @@
                       required: true
                     }),
                     h("div", { className: "mt-2 text-[11px] text-gray-500 leading-relaxed" },
-                      "※ 로비에는 최근 24시간 활동한 방만 표시됩니다. ",
+                      "로비에는 최근 24시간 활동한 방만 표시됩니다. ",
                       "방장이 END ROOM을 누르면 로비에서 숨김 처리됩니다."
                     )
                   )
@@ -710,7 +671,6 @@
               )
             ),
 
-            // Right: Lobby list
             h("div", { className: "space-y-4" },
               h("div", { className: "flex items-center justify-between px-2" },
                 h("h2", { className: "text-xs font-bold text-gray-400 uppercase tracking-widest" }, "최근 24시간 활동 방"),
@@ -750,15 +710,11 @@
         );
       }
 
-      // -----------------------------
       // Board UI
-      // -----------------------------
-      const myName = roomInfo.nickname || "Me";
       const onlineCount = data.users.length;
 
       return h("div", { className: "h-screen w-full flex flex-col bg-gray-950 text-white overflow-hidden" },
 
-        // Header
         h("header", { className: "h-14 glass-panel border-b border-gray-800 flex items-center justify-between px-6 z-20 relative" },
           h("div", { className: "flex items-center gap-4" },
             h("span", { className: "font-black text-lg text-emerald-400 tracking-tighter" }, "BOARD."),
@@ -766,48 +722,27 @@
             h("div", { className: "flex items-center gap-2 text-[10px] font-mono text-gray-400 bg-gray-900 px-3 py-1 rounded-full border border-gray-800" },
               h("span", { className: "text-white" }, `ROOM: ${roomInfo.id}`),
               h("span", { className: "text-emerald-500 font-bold uppercase" }, `● ${onlineCount} ONLINE`),
-              isOwner ? h("span", { className: "ml-2 text-[10px] text-emerald-300 font-bold" }, "(방장)") : h("span", { className: "ml-2 text-[10px] text-gray-400" }, "(뷰)")
+              isOwner
+                ? h("span", { className: "ml-2 text-[10px] text-emerald-300 font-bold" }, "(방장 · 펜+텍스트)")
+                : h("span", { className: "ml-2 text-[10px] text-gray-400" }, "(참석자 · 텍스트만)")
             )
           ),
 
           h("div", { className: "flex items-center gap-2" },
-            IconBtn({
-              title: "참석자",
-              onClick: () => setUi(p => ({ ...p, showUsers: !p.showUsers })),
-              active: ui.showUsers
-            }, "👥"),
+            IconBtn({ title: "참석자", onClick: () => setUi(p => ({ ...p, showUsers: !p.showUsers })), active: ui.showUsers }, "👥"),
 
             h("div", { className: "h-6 w-px bg-gray-800 mx-1" }),
 
-            IconBtn({
-              title: "이전 페이지",
-              onClick: () => setCurrentPage(p => Math.max(1, p - 1)),
-              disabled: currentPage === 1
-            }, "◀"),
+            IconBtn({ title: "이전 페이지", onClick: () => setCurrentPage(p => Math.max(1, p - 1)), disabled: currentPage === 1 }, "◀"),
             h("span", { className: "text-xs font-bold font-mono px-2" }, `P. ${currentPage}`),
-            IconBtn({
-              title: "다음 페이지",
-              onClick: () => setCurrentPage(p => p + 1)
-            }, "▶"),
+            IconBtn({ title: "다음 페이지", onClick: () => setCurrentPage(p => p + 1) }, "▶"),
 
             h("div", { className: "h-6 w-px bg-gray-800 mx-1" }),
 
-            IconBtn({
-              title: "채팅 패널",
-              onClick: () => setUi(p => ({ ...p, showChat: !p.showChat })),
-              active: ui.showChat
-            }, "💬"),
+            IconBtn({ title: "채팅 패널", onClick: () => setUi(p => ({ ...p, showChat: !p.showChat })), active: ui.showChat }, "💬"),
+            IconBtn({ title: "PNG 저장", onClick: exportBoardAsImage }, "🖼️"),
 
-            IconBtn({
-              title: "PNG 저장",
-              onClick: exportBoardAsImage
-            }, "🖼️"),
-
-            isOwner ? IconBtn({
-              title: "회의 종료 (방장)",
-              onClick: endRoom,
-              className: " !text-red-300 hover:!bg-red-500/20 "
-            }, "END") : null,
+            isOwner ? IconBtn({ title: "회의 종료(방장)", onClick: endRoom, className: " !text-red-300 hover:!bg-red-500/20 " }, "END") : null,
 
             h("button", {
               onClick: () => { if (confirm("회의에서 나가시겠습니까?")) window.location.reload(); },
@@ -815,7 +750,6 @@
             }, "LEAVE")
           ),
 
-          // Users panel
           ui.showUsers ? h("div", { className: "absolute top-14 left-6 w-72 glass-panel border border-gray-800 rounded-2xl p-3 z-30" },
             h("div", { className: "text-xs text-gray-300 font-bold mb-2 flex items-center justify-between" },
               h("span", null, "참석자"),
@@ -832,8 +766,7 @@
                   h("div", { className: "flex flex-col" },
                     h("div", { className: "text-sm text-white" },
                       u.name || "Unknown",
-                      (u.uid === ownerUid) ? h("span", { className: "ml-2 text-[10px] text-emerald-400 font-bold" }, "(방장)") : null,
-                      (u.uid !== ownerUid) ? h("span", { className: "ml-2 text-[10px] text-gray-400" }, "(뷰)") : null
+                      (u.uid === ownerUid) ? h("span", { className: "ml-2 text-[10px] text-emerald-400 font-bold" }, "(방장)") : null
                     ),
                     h("div", { className: "text-[10px] text-gray-500 font-mono" }, (u.uid || "").slice(0, 8))
                   ),
@@ -845,11 +778,9 @@
           ) : null
         ),
 
-        // Body
         h("div", { className: "flex-1 flex relative" },
 
-          // Canvas area
-          h("div", { ref: containerRef, className: "flex-1 relative overflow-hidden bg-[radial-gradient(#1f2937_1px,transparent_1px)] [background-size:24px_24px]" },
+          h("div", { className: "flex-1 relative overflow-hidden bg-[radial-gradient(#1f2937_1px,transparent_1px)] [background-size:24px_24px]" },
 
             h("canvas", {
               ref: canvasRef,
@@ -863,7 +794,6 @@
               onTouchEnd:  (e) => { e.preventDefault(); drawEnd(); }
             }),
 
-            // Text overlay input
             textInput.active ? h("input", {
               ref: textRef,
               type: "text",
@@ -872,8 +802,8 @@
                 left: `${textInput.rawX}px`,
                 top:  `${Math.max(0, textInput.rawY - (ui.width * 2))}px`,
                 color: ui.color,
-                fontSize: `${Math.max(14, ui.width * 4)}px`,
-                minWidth: "140px"
+                fontSize: `${Math.max(16, ui.width * 4)}px`,
+                minWidth: "160px"
               },
               value: textInput.value,
               onChange: (e) => setTextInput(p => ({ ...p, value: e.target.value })),
@@ -882,64 +812,50 @@
               autoFocus: true
             }) : null,
 
-            // Bottom toolbar
             h("div", { className: "absolute bottom-8 left-1/2 -translate-x-1/2 glass-panel border border-gray-700 px-6 py-3 rounded-3xl flex items-center gap-6 shadow-2xl" },
 
-              // tools
               h("div", { className: "flex gap-2 p-1 bg-gray-900/50 rounded-xl" },
                 h("button", {
+                  onClick: () => setUi(p => ({ ...p, tool: "text" })),
+                  className: "p-2 rounded-lg transition " + (ui.tool === "text" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white")
+                }, "T"),
+
+                h("button", {
                   onClick: () => setUi(p => ({ ...p, tool: "pencil" })),
-                  disabled: !canEdit,
+                  disabled: !canDraw,
                   className:
                     "p-2 rounded-lg transition " +
                     (ui.tool === "pencil" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white") +
-                    (!canEdit ? " opacity-40 cursor-not-allowed" : "")
-                }, "✏️"),
-                h("button", {
-                  onClick: () => setUi(p => ({ ...p, tool: "text" })),
-                  disabled: !canEdit,
-                  className:
-                    "p-2 rounded-lg transition " +
-                    (ui.tool === "text" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white") +
-                    (!canEdit ? " opacity-40 cursor-not-allowed" : "")
-                }, "T")
+                    (!canDraw ? " opacity-40 cursor-not-allowed" : "")
+                }, "✏️")
               ),
 
-              // colors
               h("div", { className: "flex gap-3" },
                 ["#10b981", "#ef4444", "#3b82f6", "#ffffff"].map(c =>
                   h("button", {
                     key: c,
                     onClick: () => setUi(p => ({ ...p, color: c })),
-                    disabled: !canEdit,
                     className:
                       "w-6 h-6 rounded-full border-2 transition " +
-                      (ui.color === c ? "border-white scale-110 ring-4 ring-white/10" : "border-transparent opacity-60") +
-                      (!canEdit ? " opacity-40 cursor-not-allowed" : ""),
+                      (ui.color === c ? "border-white scale-110 ring-4 ring-white/10" : "border-transparent opacity-60"),
                     style: { backgroundColor: c }
                   })
                 )
               ),
 
-              // width
               h("div", { className: "flex items-center gap-2" },
                 h("span", { className: "text-[10px] text-gray-400 font-mono" }, "W"),
                 h("input", {
                   type: "range",
                   min: 2,
-                  max: 10,
+                  max: 12,
                   value: ui.width,
-                  disabled: !canEdit,
                   onChange: (e) => setUi(p => ({ ...p, width: parseInt(e.target.value, 10) })),
                 })
-              ),
-
-              // notice
-              !canEdit ? h("div", { className: "text-[11px] text-gray-400" }, "현재 모드: 뷰 전용 (방장만 편집 가능)") : null
+              )
             )
           ),
 
-          // Chat
           h("div", {
             className:
               "transition-all duration-300 " +
@@ -964,10 +880,7 @@
               )
             ),
 
-            h("form", {
-              onSubmit: sendChat,
-              className: "p-4 bg-gray-900 border-t border-gray-800 flex gap-2"
-            },
+            h("form", { onSubmit: sendChat, className: "p-4 bg-gray-900 border-t border-gray-800 flex gap-2" },
               h("input", {
                 type: "text",
                 value: ui.msg,
@@ -986,7 +899,6 @@
       );
     }
 
-    // Mount
     const root = ReactDOM.createRoot(document.getElementById("root"));
     root.render(h(App));
   </script>
