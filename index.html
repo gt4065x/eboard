@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Live Collab E-Board</title>
 
-  <!-- Tailwind CSS -->
+  <!-- Tailwind CSS (dev) -->
   <script src="https://cdn.tailwindcss.com"></script>
 
   <!-- React & ReactDOM (UMD) -->
@@ -151,18 +151,29 @@
         targetId: null
       });
 
-      // selected text + drag
-      const [selectedTextId, setSelectedTextId] = useState(null);
-      const dragging = useRef({ isDrawing: false, points: [] });
-      const draggingText = useRef({ active: false, id: null, offsetX: 0, offsetY: 0, startX: 0, startY: 0 });
-      const dragGhost = useRef({ active: false, id: null, x: null, y: null }); // for live redraw while dragging
+      // selected sets (arrays)
+      const [selection, setSelection] = useState({ texts: [], strokes: [] });
+
+      // selection box (marquee)
+      const [selectBox, setSelectBox] = useState({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
 
       const canvasRef = useRef(null);
       const containerRef = useRef(null);
       const textRef = useRef(null);
 
-      // hit-test bounds (normalized)
-      const textBoundsRef = useRef(new Map()); // id -> {x1,y1,x2,y2, page}
+      // states for gesture
+      const drawing = useRef({ isDrawing: false, points: [] });
+      const draggingText = useRef({ active: false, id: null, offsetX: 0, offsetY: 0 });
+      const dragGhost = useRef({ active: false, id: null, x: null, y: null });
+
+      const marquee = useRef({ down: false, startX: 0, startY: 0, started: false });
+      const downPosPx = useRef({ x: 0, y: 0 }); // for threshold
+
+      // prevent double submit (Enter + blur)
+      const submittingText = useRef(false);
+
+      // text bounds for hit test / selection
+      const textBoundsRef = useRef(new Map()); // id -> {x1,y1,x2,y2,page}
 
       // --- Auth & Lobby ---
       useEffect(() => {
@@ -201,19 +212,19 @@
 
         const unsubStrokes = col(...base, "strokes").onSnapshot((s) => {
           setData((p) => ({ ...p, strokes: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        });
+        }, (err) => console.error("strokes snapshot error:", err));
 
         const unsubTexts = col(...base, "texts").onSnapshot((s) => {
           setData((p) => ({ ...p, texts: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        });
+        }, (err) => console.error("texts snapshot error:", err));
 
         const unsubMessages = col(...base, "messages").onSnapshot((s) => {
           setData((p) => ({ ...p, messages: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        });
+        }, (err) => console.error("messages snapshot error:", err));
 
         const unsubUsers = col(...base, "users").onSnapshot((s) => {
           setData((p) => ({ ...p, users: s.docs.map((d) => ({ id: d.id, ...d.data() })) }));
-        });
+        }, (err) => console.error("users snapshot error:", err));
 
         docRef(...base, "users", user.uid).set({
           name: roomInfo.nickname,
@@ -248,8 +259,18 @@
         };
       };
 
+      const normRect = (x1, y1, x2, y2) => {
+        const left = Math.min(x1, x2);
+        const right = Math.max(x1, x2);
+        const top = Math.min(y1, y2);
+        const bottom = Math.max(y1, y2);
+        return { left, right, top, bottom };
+      };
+
+      const rectIntersects = (a, b) =>
+        !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+
       const hitTestText = (nx, ny) => {
-        // 현재 페이지의 텍스트 중 "가장 위(최근)" 것부터 탐색
         const candidates = [...data.texts].filter(t => (t.page || 1) === currentPage);
         for (let i = candidates.length - 1; i >= 0; i--) {
           const t = candidates[i];
@@ -261,14 +282,43 @@
         return null;
       };
 
+      const computeSelectionFromBox = (box) => {
+        const r = normRect(box.x1, box.y1, box.x2, box.y2);
+
+        // texts: bounds intersects
+        const selectedTexts = [];
+        for (const t of data.texts) {
+          if ((t.page || 1) !== currentPage) continue;
+          const b = textBoundsRef.current.get(t.id);
+          if (!b) continue;
+          const tb = { left: b.x1, right: b.x2, top: b.y1, bottom: b.y2 };
+          if (rectIntersects(r, tb)) selectedTexts.push(t.id);
+        }
+
+        // strokes: any point inside box
+        const selectedStrokes = [];
+        for (const s of data.strokes) {
+          if ((s.page || 1) !== currentPage) continue;
+          const pts = s.points || [];
+          let inside = false;
+          for (const p of pts) {
+            if (p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom) { inside = true; break; }
+          }
+          if (inside) selectedStrokes.push(s.id);
+        }
+
+        return { texts: selectedTexts, strokes: selectedStrokes };
+      };
+
       // --- Canvas redraw (텍스트 hitbox도 같이 계산) ---
       const redraw = useCallback(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
+
         const ctx = canvas.getContext("2d");
         const dpr = window.devicePixelRatio || 1;
-
         ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+
         const { w, h } = getCanvasWH();
 
         // strokes
@@ -279,17 +329,29 @@
             ctx.beginPath();
             ctx.lineCap = "round";
             ctx.lineJoin = "round";
-            ctx.strokeStyle = s.color;
-            ctx.lineWidth = s.width;
+            ctx.strokeStyle = s.color || "#10b981";
+            ctx.lineWidth = s.width || 3;
             ctx.moveTo(s.points[0].x * w, s.points[0].y * h);
             s.points.slice(1).forEach((p) => ctx.lineTo(p.x * w, p.y * h));
             ctx.stroke();
+
+            // selected stroke outline (가벼운 강조)
+            if (selection.strokes.includes(s.id)) {
+              ctx.save();
+              ctx.globalAlpha = 0.5;
+              ctx.lineWidth = (s.width || 3) + 4;
+              ctx.strokeStyle = "#10b981";
+              ctx.beginPath();
+              ctx.moveTo(s.points[0].x * w, s.points[0].y * h);
+              s.points.slice(1).forEach((p) => ctx.lineTo(p.x * w, p.y * h));
+              ctx.stroke();
+              ctx.restore();
+            }
           });
 
         // texts + bounds
-        // bounds reset for current page
         const boundsMap = textBoundsRef.current;
-        // (전체 clear 대신, currentPage만 덮어쓰기)
+
         data.texts
           .filter((t) => (t.page || 1) === currentPage)
           .forEach((t) => {
@@ -303,7 +365,7 @@
             const px = drawX * w;
             const py = drawY * h;
 
-            const fontPx = Math.max(14, (t.fontSize || 16) * 2);
+            const fontPx = Math.max(16, (t.fontSize || 16) * 2);
             ctx.fillStyle = t.color || "#ffffff";
             ctx.font = `${fontPx}px sans-serif`;
             ctx.textBaseline = "alphabetic";
@@ -311,7 +373,8 @@
 
             const metrics = ctx.measureText(t.text || "");
             const width = metrics.width || 0;
-            const height = fontPx; // 대략값(히트박스)
+            const height = fontPx;
+
             const x1 = clamp01(px / w);
             const x2 = clamp01((px + width) / w);
             const y1 = clamp01((py - height) / h);
@@ -319,8 +382,8 @@
 
             boundsMap.set(t.id, { x1, y1, x2, y2, page: t.page || 1 });
 
-            // selected outline
-            if (t.id === selectedTextId) {
+            // selected text outline
+            if (selection.texts.includes(t.id)) {
               ctx.save();
               ctx.strokeStyle = "#10b981";
               ctx.lineWidth = 2;
@@ -329,7 +392,20 @@
               ctx.restore();
             }
           });
-      }, [data.strokes, data.texts, currentPage, selectedTextId]);
+
+        // marquee box
+        if (selectBox.active) {
+          const r = normRect(selectBox.x1, selectBox.y1, selectBox.x2, selectBox.y2);
+          ctx.save();
+          ctx.strokeStyle = "#10b981";
+          ctx.lineWidth = 2;
+          ctx.setLineDash([8, 6]);
+          ctx.strokeRect(r.left * w, r.top * h, (r.right - r.left) * w, (r.bottom - r.top) * h);
+          ctx.fillStyle = "rgba(16,185,129,0.08)";
+          ctx.fillRect(r.left * w, r.top * h, (r.right - r.left) * w, (r.bottom - r.top) * h);
+          ctx.restore();
+        }
+      }, [data.strokes, data.texts, currentPage, selection.texts, selection.strokes, selectBox]);
 
       useEffect(() => { redraw(); }, [redraw]);
 
@@ -357,23 +433,91 @@
         return () => window.removeEventListener("resize", resize);
       }, [redraw]);
 
-      // --- UX: tool 변경 시 선택 해제/커서 ---
+      // --- UX: tool 변경 시 커서/상태 정리 ---
       useEffect(() => {
-        document.body.style.cursor = ui.tool === "select" ? "default" : (ui.tool === "text" ? "text" : "crosshair");
-        if (ui.tool !== "select") setSelectedTextId(null);
+        document.body.style.cursor =
+          ui.tool === "select" ? "default" : (ui.tool === "text" ? "text" : "crosshair");
+
+        // 텍스트 툴로 바꾸면 드래그 상태/선택 박스 정리
+        if (ui.tool === "text") {
+          draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0 };
+          dragGhost.current = { active: false, id: null, x: null, y: null };
+          marquee.current = { down: false, startX: 0, startY: 0, started: false };
+          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+          setSelection({ texts: [], strokes: [] });
+        }
+
+        // 펜으로 바꾸면 선택 해제
+        if (ui.tool === "pencil") {
+          setSelection({ texts: [], strokes: [] });
+          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+        }
       }, [ui.tool]);
 
-      // --- Pointer Events 통합 핸들러 ---
+      // --- 텍스트 저장(생성/수정) : ✅ 중복 submit 방지 + UI 먼저 닫기 ---
+      const submitText = async (source = "unknown") => {
+        if (submittingText.current) return;
+        submittingText.current = true;
+
+        const trimmed = (textInput.value || "").trim();
+        const snapshot = { ...textInput };
+
+        // ✅ UI 먼저 닫기(모바일/포인터 꼬임 방지)
+        setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
+
+        try {
+          if (!trimmed) return;
+
+          const payloadBase = {
+            text: trimmed,
+            x: snapshot.x,
+            y: snapshot.y,
+            color: ui.color,
+            fontSize: ui.width * 2,
+            page: currentPage,
+            userId: user.uid,
+            userName: roomInfo.nickname,
+            updatedAt: serverTimestamp()
+          };
+
+          if (snapshot.mode === "edit" && snapshot.targetId) {
+            await docRef("artifacts", roomInfo.id, "public", "data", "texts", snapshot.targetId).update(payloadBase);
+            setSelection((p) => ({ ...p, texts: [snapshot.targetId], strokes: [] }));
+          } else {
+            const added = await col("artifacts", roomInfo.id, "public", "data", "texts").add({
+              ...payloadBase,
+              timestamp: serverTimestamp()
+            });
+            setSelection((p) => ({ ...p, texts: [added.id], strokes: [] }));
+          }
+
+          docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
+            { lastActivity: serverTimestamp() },
+            { merge: true }
+          );
+        } catch (err) {
+          console.error("Text submit failed:", err);
+        } finally {
+          submittingText.current = false;
+        }
+      };
+
+      // --- Pointer Handlers ---
       const onPointerDown = (e) => {
         if (!isLoggedIn) return;
-        // input 편집 중이면 캔버스 잡지 않기
         if (textInput.active) return;
 
+        // pointer capture
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+
         const pos = getPos(e);
+        downPosPx.current = { x: pos.rawX, y: pos.rawY };
 
         // 텍스트 추가 모드: 탭하면 입력창 생성
         if (ui.tool === "text") {
-          setSelectedTextId(null);
+          setSelection({ texts: [], strokes: [] });
+          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+
           setTextInput({
             active: true,
             x: pos.x, y: pos.y,
@@ -388,50 +532,79 @@
         // 선택/이동 모드
         if (ui.tool === "select") {
           const hit = hitTestText(pos.x, pos.y);
+
           if (hit) {
-            setSelectedTextId(hit.id);
-            // 드래그 시작
-            const b = textBoundsRef.current.get(hit.id);
-            // offset: 클릭 지점과 텍스트 원점(x,y) 차이
+            // 텍스트 선택 + 드래그 준비
+            setSelection({ texts: [hit.id], strokes: [] });
+
             const ox = pos.x - (hit.x || 0);
             const oy = pos.y - (hit.y || 0);
-            draggingText.current = { active: true, id: hit.id, offsetX: ox, offsetY: oy, startX: hit.x, startY: hit.y };
+            draggingText.current = { active: true, id: hit.id, offsetX: ox, offsetY: oy };
             dragGhost.current = { active: true, id: hit.id, x: hit.x, y: hit.y };
+
+            marquee.current = { down: false, startX: 0, startY: 0, started: false };
+            setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
           } else {
-            setSelectedTextId(null);
+            // 빈 공간: 마키(영역 선택) 준비
+            setSelection({ texts: [], strokes: [] });
+            marquee.current = { down: true, startX: pos.x, startY: pos.y, started: false };
+            setSelectBox({ active: false, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y });
+
+            draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0 };
+            dragGhost.current = { active: false, id: null, x: null, y: null };
           }
           return;
         }
 
         // 펜 모드
         if (ui.tool === "pencil") {
-          setSelectedTextId(null);
-          dragging.current.isDrawing = true;
-          dragging.current.points = [{ x: pos.x, y: pos.y }];
+          setSelection({ texts: [], strokes: [] });
+          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+
+          drawing.current.isDrawing = true;
+          drawing.current.points = [{ x: pos.x, y: pos.y }];
           return;
         }
       };
 
       const onPointerMove = (e) => {
-        // 텍스트 드래그
+        if (textInput.active) return;
+        const pos = getPos(e);
+
+        // 텍스트 드래그 이동
         if (ui.tool === "select" && draggingText.current.active && draggingText.current.id) {
-          const pos = getPos(e);
           const nx = clamp01(pos.x - draggingText.current.offsetX);
           const ny = clamp01(pos.y - draggingText.current.offsetY);
-
           dragGhost.current = { active: true, id: draggingText.current.id, x: nx, y: ny };
           redraw();
           return;
         }
 
+        // 마키 선택 박스
+        if (ui.tool === "select" && marquee.current.down) {
+          const dx = Math.abs(pos.rawX - downPosPx.current.x);
+          const dy = Math.abs(pos.rawY - downPosPx.current.y);
+          const threshold = 6;
+
+          if (!marquee.current.started && (dx > threshold || dy > threshold)) {
+            marquee.current.started = true;
+            setSelectBox((b) => ({ ...b, active: true }));
+          }
+
+          if (marquee.current.started) {
+            setSelectBox({ active: true, x1: marquee.current.startX, y1: marquee.current.startY, x2: pos.x, y2: pos.y });
+          }
+          return;
+        }
+
         // 드로잉
-        if (ui.tool === "pencil" && dragging.current.isDrawing) {
-          const pos = getPos(e);
-          dragging.current.points.push({ x: pos.x, y: pos.y });
+        if (ui.tool === "pencil" && drawing.current.isDrawing) {
+          drawing.current.points.push({ x: pos.x, y: pos.y });
 
           const ctx = canvasRef.current.getContext("2d");
-          const last = dragging.current.points[dragging.current.points.length - 2];
           const { w, h } = getCanvasWH();
+          const pts = drawing.current.points;
+          const last = pts[pts.length - 2];
 
           ctx.beginPath();
           ctx.lineCap = "round";
@@ -444,17 +617,16 @@
         }
       };
 
-      const onPointerUp = async () => {
+      const onPointerUp = async (e) => {
         // 텍스트 드래그 종료 -> DB 업데이트
         if (ui.tool === "select" && draggingText.current.active && draggingText.current.id) {
           const id = draggingText.current.id;
           const finalX = dragGhost.current.x;
           const finalY = dragGhost.current.y;
 
-          draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0, startX: 0, startY: 0 };
+          draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0 };
           dragGhost.current = { active: false, id: null, x: null, y: null };
 
-          // 최종 좌표 반영
           if (finalX != null && finalY != null) {
             try {
               await docRef("artifacts", roomInfo.id, "public", "data", "texts", id).update({
@@ -475,14 +647,32 @@
           return;
         }
 
+        // 마키 종료 -> 선택 확정
+        if (ui.tool === "select" && marquee.current.down) {
+          const wasStarted = marquee.current.started;
+          marquee.current = { down: false, startX: 0, startY: 0, started: false };
+
+          if (wasStarted) {
+            const box = { ...selectBox };
+            const selected = computeSelectionFromBox(box);
+            setSelection(selected);
+            setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+          } else {
+            // 클릭만 한 경우: 선택 유지/해제는 down에서 이미 처리됨
+            setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+          }
+          redraw();
+          return;
+        }
+
         // 펜 종료 -> DB 저장
-        if (ui.tool === "pencil" && dragging.current.isDrawing) {
-          dragging.current.isDrawing = false;
-          if (dragging.current.points.length < 2) return;
+        if (ui.tool === "pencil" && drawing.current.isDrawing) {
+          drawing.current.isDrawing = false;
+          if (drawing.current.points.length < 2) return;
 
           try {
             await col("artifacts", roomInfo.id, "public", "data", "strokes").add({
-              points: dragging.current.points,
+              points: drawing.current.points,
               color: ui.color,
               width: ui.width,
               page: currentPage,
@@ -500,7 +690,7 @@
         }
       };
 
-      // --- 더블클릭/더블탭: 선택된 텍스트 편집 ---
+      // 더블클릭: 텍스트 편집
       const onDoubleClick = (e) => {
         if (!isLoggedIn) return;
         if (ui.tool !== "select") return;
@@ -510,7 +700,9 @@
         const hit = hitTestText(pos.x, pos.y);
         if (!hit) return;
 
-        setSelectedTextId(hit.id);
+        setSelection({ texts: [hit.id], strokes: [] });
+        setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+
         setTextInput({
           active: true,
           x: hit.x, y: hit.y,
@@ -521,71 +713,7 @@
         });
       };
 
-      // --- 텍스트 저장(생성/수정) ---
-      const submitText = async () => {
-        const trimmed = (textInput.value || "").trim();
-
-        // 입력이 비면: 편집이면 유지(취소), 생성이면 그냥 닫기
-        if (!trimmed) {
-          setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
-          return;
-        }
-
-        const payloadBase = {
-          text: trimmed,
-          x: textInput.x,
-          y: textInput.y,
-          color: ui.color,
-          fontSize: ui.width * 2,
-          page: currentPage,
-          userId: user.uid,
-          userName: roomInfo.nickname
-        };
-
-        try {
-          if (textInput.mode === "edit" && textInput.targetId) {
-            await docRef("artifacts", roomInfo.id, "public", "data", "texts", textInput.targetId).update({
-              ...payloadBase,
-              updatedAt: serverTimestamp()
-            });
-            setSelectedTextId(textInput.targetId);
-          } else {
-            const added = await col("artifacts", roomInfo.id, "public", "data", "texts").add({
-              ...payloadBase,
-              timestamp: serverTimestamp()
-            });
-            setSelectedTextId(added.id);
-          }
-
-          docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
-            { lastActivity: serverTimestamp() },
-            { merge: true }
-          );
-        } catch (err) {
-          console.error("Text submit failed:", err);
-        }
-
-        setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
-      };
-
-      // --- 삭제(선택된 텍스트 / 마지막 stroke·text undo) ---
-      const deleteSelectedText = async () => {
-        if (!selectedTextId) return;
-        if (!confirm("선택한 텍스트를 삭제할까요?")) return;
-
-        try {
-          await docRef("artifacts", roomInfo.id, "public", "data", "texts", selectedTextId).delete();
-          setSelectedTextId(null);
-
-          docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
-            { lastActivity: serverTimestamp() },
-            { merge: true }
-          );
-        } catch (err) {
-          console.error("Delete text failed:", err);
-        }
-      };
-
+      // --- Undo (내 마지막 stroke/text) ---
       const undoLast = async () => {
         if (!user) return;
 
@@ -608,9 +736,44 @@
 
         try {
           await docRef("artifacts", roomInfo.id, "public", "data", target.col, target.id).delete();
-          if (target.col === "texts" && target.id === selectedTextId) setSelectedTextId(null);
+          setSelection((p) => ({
+            texts: p.texts.filter(x => x !== target.id),
+            strokes: p.strokes.filter(x => x !== target.id),
+          }));
         } catch (err) {
           console.error("Undo delete failed:", err);
+        }
+      };
+
+      // --- ✅ 선택 영역 일괄 삭제 (texts + strokes) ---
+      const deleteSelectionBatch = async () => {
+        const total = selection.texts.length + selection.strokes.length;
+        if (total === 0) return;
+
+        if (!confirm(`선택된 항목 ${total}개를 삭제할까요?`)) return;
+
+        try {
+          const batch = db.batch();
+
+          for (const id of selection.texts) {
+            batch.delete(docRef("artifacts", roomInfo.id, "public", "data", "texts", id));
+          }
+          for (const id of selection.strokes) {
+            batch.delete(docRef("artifacts", roomInfo.id, "public", "data", "strokes", id));
+          }
+
+          await batch.commit();
+
+          setSelection({ texts: [], strokes: [] });
+          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+
+          docRef("artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id).set(
+            { lastActivity: serverTimestamp() },
+            { merge: true }
+          );
+        } catch (err) {
+          console.error("Batch delete failed:", err);
+          alert("삭제에 실패했습니다. 콘솔 로그를 확인해주세요.");
         }
       };
 
@@ -741,6 +904,8 @@
       }
 
       // --- Board page ---
+      const selectedCount = selection.texts.length + selection.strokes.length;
+
       return (
         <div className="h-screen w-full flex flex-col bg-gray-950 text-white overflow-hidden">
           <header className="h-14 glass-panel border-b border-gray-800 flex items-center justify-between px-6 z-20">
@@ -751,6 +916,11 @@
                 <span className="text-white">ROOM: {roomInfo.id}</span>
                 <span className="text-emerald-500 font-bold uppercase">● {data.users.length} ONLINE</span>
               </div>
+              {ui.tool === "select" && selectedCount > 0 && (
+                <div className="ml-2 text-[10px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full">
+                  SELECTED: {selectedCount}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-3">
@@ -815,10 +985,17 @@
                   }}
                   value={textInput.value}
                   onChange={(e) => setTextInput((p) => ({ ...p, value: e.target.value }))}
-                  onBlur={submitText}
+                  onBlur={() => submitText("blur")}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") submitText();
-                    if (e.key === "Escape") setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitText("enter");
+                      e.currentTarget.blur();
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
+                    }
                   }}
                   autoFocus
                 />
@@ -845,7 +1022,7 @@
                   <button
                     onClick={() => setUi((p) => ({ ...p, tool: "select" }))}
                     className={`p-2 rounded-lg transition ${ui.tool === "select" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white"}`}
-                    title="선택/이동"
+                    title="선택/영역 선택"
                   >
                     <Icons.Select />
                   </button>
@@ -871,10 +1048,10 @@
                   </button>
 
                   <button
-                    onClick={deleteSelectedText}
-                    disabled={!selectedTextId}
-                    className={`p-2 rounded-xl transition ${selectedTextId ? "hover:bg-red-500/20 text-gray-400 hover:text-red-400" : "opacity-40 text-gray-500 cursor-not-allowed"}`}
-                    title="선택 텍스트 삭제"
+                    onClick={deleteSelectionBatch}
+                    disabled={selectedCount === 0}
+                    className={`p-2 rounded-xl transition ${selectedCount > 0 ? "hover:bg-red-500/20 text-gray-400 hover:text-red-400" : "opacity-40 text-gray-500 cursor-not-allowed"}`}
+                    title="선택 항목 일괄 삭제"
                   >
                     <Icons.Trash />
                   </button>
@@ -883,7 +1060,7 @@
                 {/* hint */}
                 {ui.tool === "select" && (
                   <div className="hidden md:block text-[10px] text-gray-400 font-mono">
-                    TAP: 선택 · DRAG: 이동 · DOUBLE: 수정 · 🗑: 삭제
+                    텍스트 클릭: 선택 · 텍스트 드래그: 이동 · 텍스트 더블클릭: 수정 · 빈 곳 드래그: 영역 선택 · 🗑: 일괄 삭제
                   </div>
                 )}
               </div>
