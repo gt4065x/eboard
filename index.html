@@ -2,23 +2,15 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Live Collab E-Board</title>
 
-  <!-- Tailwind CSS (dev) -->
+  <!-- Tailwind (dev) -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- React & ReactDOM (UMD) -->
+  <!-- React UMD -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-
-  <!-- Babel (JSX) -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-  <!-- Firebase (compat / UMD) -->
-  <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
 
   <style>
     ::-webkit-scrollbar { width: 6px; }
@@ -26,1143 +18,977 @@
     ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 10px; }
     ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
 
-    body { background-color: #111827; margin: 0; overflow: hidden; }
-    canvas { cursor: crosshair; }
-
+    body { background-color: #111827; margin: 0; overflow: hidden; touch-action: none; }
+    canvas { touch-action: none; cursor: crosshair; }
     .glass-panel { background: rgba(31, 41, 55, 0.85); backdrop-filter: blur(10px); }
 
     .text-input-overlay {
       position: absolute;
-      background: rgba(0,0,0,0.15);
+      background: transparent;
       border: 1px dashed #10b981;
       color: white;
       outline: none;
-      padding: 6px 8px;
+      padding: 2px 6px;
       font-family: sans-serif;
       z-index: 60;
-      border-radius: 10px;
-      touch-action: auto;
-      pointer-events: auto;
-      min-width: 160px;
+      white-space: nowrap;
+      border-radius: 8px;
     }
-
     .room-card:hover { transform: translateY(-2px); }
   </style>
 </head>
-
 <body>
   <div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useEffect, useRef, useCallback } = React;
+  <!-- App (NO Babel / NO JSX) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import {
+      getFirestore,
+      collection, doc,
+      setDoc, addDoc, deleteDoc,
+      onSnapshot,
+      serverTimestamp,
+      query, where, orderBy, limit,
+      getDoc,
+      writeBatch,
+      runTransaction,
+      Timestamp
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    // --- Firebase Configuration ---
+    const h = React.createElement;
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+    // -----------------------------
+    // Firebase Config
+    // -----------------------------
     const firebaseConfig = {
-      apiKey: "AIzaSyBjej7dpiro38Dp8UEA5TAB-yVmXbNTx1Y",
-  authDomain: "eboard-7849c.firebaseapp.com",
-  databaseURL: "https://eboard-7849c-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "eboard-7849c",
-  storageBucket: "eboard-7849c.firebasestorage.app",
-  messagingSenderId: "458693602522",
-  appId: "1:458693602522:web:4d9ad89326f970aec289e3",
-  measurementId: "G-PZNHZP0MEC"
+      apiKey: "AIzaSyDK2VURk2eqaRy52yi2sPZuwYVb2ymmR3I",
+      authDomain: "eboard-95055.firebaseapp.com",
+      databaseURL: "https://eboard-95055-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "eboard-95055",
+      storageBucket: "eboard-95055.firebasestorage.app",
+      messagingSenderId: "927523134440",
+      appId: "1:927523134440:web:4a546e6c565368e283e25d",
+      measurementId: "G-BCPK0YX0E3"
     };
 
-    // ✅ 로비는 모든 사용자에게 "항상 동일한 경로"로 고정
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // Lobby ID (고정)
     const LOBBY_ID = "eboard-lobby-v1";
 
-    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
-    const auth = firebase.auth();
-    const db = firebase.firestore();
-    const serverTimestamp = () => firebase.firestore.FieldValue.serverTimestamp();
-    const col = (...segs) => db.collection(segs.join("/"));
-    const docRef = (...segs) => db.doc(segs.join("/"));
+    // 환경 제공 토큰(있으면 사용)
+    const globalAppId = (typeof __app_id !== "undefined" && __app_id) ? __app_id : LOBBY_ID;
 
-    const Icons = {
-      Pencil: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-            d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-        </svg>
-      ),
-      Text: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M12 6v14m-5 0h10" />
-        </svg>
-      ),
-      Select: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-            d="M3 3l7.5 18 2-7.5L20 11 3 3z" />
-        </svg>
-      ),
-      Trash: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
-      ),
-      Users: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-            d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-        </svg>
-      ),
-      Send: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-        </svg>
-      ),
-      Undo: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-        </svg>
-      ),
-      Plus: () => (
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
-        </svg>
-      )
-    };
+    // -----------------------------
+    // Small helpers
+    // -----------------------------
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const nowISO = () => new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
 
-    const clamp01 = (v) => Math.min(1, Math.max(0, v));
+    function useInterval(fn, ms) {
+      const fnRef = useRef(fn);
+      useEffect(() => { fnRef.current = fn; }, [fn]);
+      useEffect(() => {
+        if (!ms) return;
+        const id = setInterval(() => fnRef.current(), ms);
+        return () => clearInterval(id);
+      }, [ms]);
+    }
 
-    const App = () => {
+    // -----------------------------
+    // Icons (simple text icons to keep light)
+    // -----------------------------
+    const IconBtn = ({ title, onClick, active, disabled, children, className }) => (
+      h("button", {
+        title,
+        onClick,
+        disabled,
+        className:
+          (className || "") +
+          " p-2 rounded-lg transition select-none " +
+          (disabled ? " opacity-40 cursor-not-allowed " : " hover:bg-gray-800 ") +
+          (active ? " bg-emerald-500/20 text-emerald-400 " : " text-gray-300 ")
+      }, children)
+    );
+
+    // -----------------------------
+    // App Component
+    // -----------------------------
+    function App() {
       const [user, setUser] = useState(null);
       const [isLoggedIn, setIsLoggedIn] = useState(false);
+
       const [roomInfo, setRoomInfo] = useState({
         id: "",
         nickname: localStorage.getItem("eboard_nick") || ""
       });
 
       const [activeRooms, setActiveRooms] = useState([]);
+
       const [currentPage, setCurrentPage] = useState(1);
-      const [data, setData] = useState({ strokes: [], texts: [], messages: [], users: [] });
 
-      // ui.tool: 'pencil' | 'text' | 'select'
-      const [ui, setUi] = useState({ color: "#10b981", width: 4, showChat: true, msg: "", tool: "pencil" });
-
-      // text input overlay
-      const [textInput, setTextInput] = useState({
-        active: false,
-        x: 0, y: 0, rawX: 0, rawY: 0,
-        value: "",
-        mode: "create",     // 'create' | 'edit'
-        targetId: null
+      const [data, setData] = useState({
+        strokes: [],
+        texts: [],
+        messages: [],
+        users: []
       });
 
-      // selected sets (arrays)
-      const [selection, setSelection] = useState({ texts: [], strokes: [] });
+      const [ui, setUi] = useState({
+        color: "#10b981",
+        width: 4,
+        showChat: true,
+        msg: "",
+        tool: "pencil", // pencil | text
+        showUsers: false
+      });
 
-      // selection box (marquee)
-      const [selectBox, setSelectBox] = useState({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
+      const [textInput, setTextInput] = useState({
+        active: false,
+        x: 0, y: 0,
+        rawX: 0, rawY: 0,
+        value: ""
+      });
+
+      const [ownerUid, setOwnerUid] = useState(null);
+      const isOwner = useMemo(() => !!(user && ownerUid && user.uid === ownerUid), [user, ownerUid]);
+      const canEdit = isOwner; // ✅ 방장 권한부여 기능 제외: 방장만 편집 가능, 참석자는 뷰 전용
 
       const canvasRef = useRef(null);
       const containerRef = useRef(null);
       const textRef = useRef(null);
 
-      // gesture state
-      const drawing = useRef({ isDrawing: false, points: [] });
-      const draggingText = useRef({ active: false, id: null, offsetX: 0, offsetY: 0 });
-      const dragGhost = useRef({ active: false, id: null, x: null, y: null });
+      const drawingRef = useRef({ isDrawing: false, points: [] });
 
-      const marquee = useRef({ down: false, startX: 0, startY: 0, started: false });
-      const downPosPx = useRef({ x: 0, y: 0 });
-
-      // prevent double submit (Enter + blur)
-      const submittingText = useRef(false);
-
-      // text bounds for hit test / selection
-      const textBoundsRef = useRef(new Map()); // id -> {x1,y1,x2,y2,page}
-
+      // -----------------------------
       // 1) Auth
+      // -----------------------------
       useEffect(() => {
-        const initAuth = async () => {
+        (async () => {
           try {
             if (typeof __initial_auth_token !== "undefined" && __initial_auth_token) {
-              await auth.signInWithCustomToken(__initial_auth_token);
+              await signInWithCustomToken(auth, __initial_auth_token);
             } else {
-              await auth.signInAnonymously();
+              await signInAnonymously(auth);
             }
-          } catch (err) {
-            console.error("Auth failed:", err);
+          } catch (e) {
+            console.error("Auth failed:", e);
           }
-        };
-        initAuth();
-        const unsubAuth = auth.onAuthStateChanged((u) => setUser(u));
-        return () => unsubAuth();
+        })();
+
+        const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+        return () => unsub();
       }, []);
 
-      // ✅ 2) Lobby Listener: "고정 로비"로 조회
+      // -----------------------------
+      // 2) Lobby listener (최근 24시간 + active)
+      // -----------------------------
       useEffect(() => {
-        const unsubLobby = col("artifacts", LOBBY_ID, "public", "data", "active_rooms")
-          .onSnapshot((s) => {
-            const rooms = s.docs.map((d) => ({ id: d.id, ...d.data() }));
-            rooms.sort((a, b) => (b.lastActivity?.toMillis?.() || 0) - (a.lastActivity?.toMillis?.() || 0));
-            setActiveRooms(rooms);
-          }, (err) => console.error("Lobby onSnapshot error:", err));
+        const cutoff = Timestamp.fromMillis(Date.now() - 24 * 60 * 60 * 1000);
+
+        const qLobby = query(
+          collection(db, "artifacts", globalAppId, "public", "data", "active_rooms"),
+          where("status", "==", "active"),
+          where("lastActivity", ">=", cutoff),
+          orderBy("lastActivity", "desc"),
+          limit(50)
+        );
+
+        const unsubLobby = onSnapshot(qLobby, (snap) => {
+          const rooms = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          setActiveRooms(rooms);
+        }, (err) => {
+          console.error("Lobby onSnapshot error:", err);
+        });
+
         return () => unsubLobby();
       }, []);
 
-      // --- helpers ---
-      const getCanvasWH = () => {
-        const canvas = canvasRef.current;
-        const dpr = window.devicePixelRatio || 1;
-        return { w: canvas.width / dpr, h: canvas.height / dpr };
-      };
-
-      const getPos = (e) => {
-        const rect = canvasRef.current.getBoundingClientRect();
-        const clientX = e.clientX;
-        const clientY = e.clientY;
-        return {
-          x: clamp01((clientX - rect.left) / rect.width),
-          y: clamp01((clientY - rect.top) / rect.height),
-          rawX: clientX - rect.left,
-          rawY: clientY - rect.top
-        };
-      };
-
-      const normRect = (x1, y1, x2, y2) => {
-        const left = Math.min(x1, x2);
-        const right = Math.max(x1, x2);
-        const top = Math.min(y1, y2);
-        const bottom = Math.max(y1, y2);
-        return { left, right, top, bottom };
-      };
-
-      const rectIntersects = (a, b) =>
-        !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
-
-      const hitTestText = (nx, ny) => {
-        const candidates = [...data.texts].filter(t => (t.page || 1) === currentPage);
-        for (let i = candidates.length - 1; i >= 0; i--) {
-          const t = candidates[i];
-          const b = textBoundsRef.current.get(t.id);
-          if (!b) continue;
-          if ((b.page || 1) !== currentPage) continue;
-          if (nx >= b.x1 && nx <= b.x2 && ny >= b.y1 && ny <= b.y2) return t;
-        }
-        return null;
-      };
-
-      const computeSelectionFromBox = (box) => {
-        const r = normRect(box.x1, box.y1, box.x2, box.y2);
-
-        const selectedTexts = [];
-        for (const t of data.texts) {
-          if ((t.page || 1) !== currentPage) continue;
-          const b = textBoundsRef.current.get(t.id);
-          if (!b) continue;
-          const tb = { left: b.x1, right: b.x2, top: b.y1, bottom: b.y2 };
-          if (rectIntersects(r, tb)) selectedTexts.push(t.id);
-        }
-
-        const selectedStrokes = [];
-        for (const s of data.strokes) {
-          if ((s.page || 1) !== currentPage) continue;
-          const pts = s.points || [];
-          let inside = false;
-          for (const p of pts) {
-            if (p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom) { inside = true; break; }
+      // -----------------------------
+      // 3) Ensure room_meta/meta (owner 지정 1회)
+      // -----------------------------
+      const ensureRoomMetaOwner = useCallback(async (roomId, currentUid) => {
+        const metaRef = doc(db, "artifacts", roomId, "public", "data", "room_meta", "meta");
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(metaRef);
+          if (!snap.exists()) {
+            tx.set(metaRef, {
+              ownerUid: currentUid,
+              status: "active",
+              createdAt: serverTimestamp()
+            }, { merge: true });
           }
-          if (inside) selectedStrokes.push(s.id);
-        }
+        });
+      }, []);
 
-        return { texts: selectedTexts, strokes: selectedStrokes };
-      };
+      // -----------------------------
+      // 4) Room meta subscribe (ownerUid + status)
+      // -----------------------------
+      useEffect(() => {
+        if (!isLoggedIn || !roomInfo.id) return;
 
-      // ✅ Room Data Sync (roomInfo.id 기준)
+        const metaRef = doc(db, "artifacts", roomInfo.id, "public", "data", "room_meta", "meta");
+        const unsub = onSnapshot(metaRef, (snap) => {
+          if (snap.exists()) {
+            setOwnerUid(snap.data().ownerUid || null);
+          } else {
+            setOwnerUid(null);
+          }
+        }, (err) => console.error("meta onSnapshot error:", err));
+
+        return () => unsub();
+      }, [isLoggedIn, roomInfo.id]);
+
+      // -----------------------------
+      // 5) Room data sync (strokes/texts/messages/users)
+      // -----------------------------
       useEffect(() => {
         if (!user || !isLoggedIn || !roomInfo.id) return;
 
         const base = ["artifacts", roomInfo.id, "public", "data"];
-        const sortByTime = (docs) =>
-          [...docs].sort((a, b) => (a.timestamp?.toMillis?.() || 0) - (b.timestamp?.toMillis?.() || 0));
-
-        const unsubStrokes = col(...base, "strokes").onSnapshot((s) => {
-          setData((p) => ({ ...p, strokes: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        }, (err) => console.error("strokes snapshot error:", err));
-
-        const unsubTexts = col(...base, "texts").onSnapshot((s) => {
-          setData((p) => ({ ...p, texts: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        }, (err) => console.error("texts snapshot error:", err));
-
-        const unsubMessages = col(...base, "messages").onSnapshot((s) => {
-          setData((p) => ({ ...p, messages: sortByTime(s.docs.map((d) => ({ id: d.id, ...d.data() }))) }));
-        }, (err) => console.error("messages snapshot error:", err));
-
-        const unsubUsers = col(...base, "users").onSnapshot((s) => {
-          setData((p) => ({ ...p, users: s.docs.map((d) => ({ id: d.id, ...d.data() })) }));
-        }, (err) => console.error("users snapshot error:", err));
-
-        // users presence
-        docRef(...base, "users", user.uid).set({
-          name: roomInfo.nickname,
-          uid: user.uid,
-          lastSeen: serverTimestamp()
-        }, { merge: true });
-
-        // ✅ 로비에 입장 즉시 등록 + heartbeat
-        const lobbyRoomDoc = docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id);
-
-        lobbyRoomDoc.set({
-          roomId: roomInfo.id,
-          lastActivity: serverTimestamp(),
-        }, { merge: true });
-
-        const heartbeat = setInterval(() => {
-          lobbyRoomDoc.set({ lastActivity: serverTimestamp() }, { merge: true });
-        }, 15000);
-
-        return () => {
-          unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers();
-          clearInterval(heartbeat);
+        const sortByTime = (arr) => {
+          const copy = [...arr];
+          copy.sort((a, b) => (a.timestamp?.toMillis?.() || 0) - (b.timestamp?.toMillis?.() || 0));
+          return copy;
         };
+
+        const unsubStrokes = onSnapshot(collection(db, ...base, "strokes"), (s) => {
+          const rows = s.docs.map(d => ({ id: d.id, ...d.data() }));
+          setData(p => ({ ...p, strokes: sortByTime(rows) }));
+        }, (err) => console.error("strokes onSnapshot error:", err));
+
+        const unsubTexts = onSnapshot(collection(db, ...base, "texts"), (s) => {
+          const rows = s.docs.map(d => ({ id: d.id, ...d.data() }));
+          setData(p => ({ ...p, texts: sortByTime(rows) }));
+        }, (err) => console.error("texts onSnapshot error:", err));
+
+        const unsubMessages = onSnapshot(collection(db, ...base, "messages"), (s) => {
+          const rows = s.docs.map(d => ({ id: d.id, ...d.data() }));
+          setData(p => ({ ...p, messages: sortByTime(rows) }));
+        }, (err) => console.error("messages onSnapshot error:", err));
+
+        const unsubUsers = onSnapshot(collection(db, ...base, "users"), (s) => {
+          const rows = s.docs.map(d => ({ id: d.id, ...d.data() }));
+          setData(p => ({ ...p, users: rows }));
+        }, (err) => console.error("users onSnapshot error:", err));
+
+        // ✅ 입장 등록(users/{uid})
+        setDoc(doc(db, ...base, "users", user.uid), {
+          uid: user.uid,
+          name: roomInfo.nickname,
+          lastSeen: serverTimestamp()
+        }, { merge: true }).catch(e => console.error("set users failed:", e));
+
+        // ✅ 로비 갱신 (active)
+        setDoc(
+          doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id),
+          {
+            roomId: roomInfo.id,
+            status: "active",
+            lastActivity: serverTimestamp(),
+          },
+          { merge: true }
+        ).catch(e => console.error("set lobby failed:", e));
+
+        return () => { unsubStrokes(); unsubTexts(); unsubMessages(); unsubUsers(); };
       }, [user, isLoggedIn, roomInfo.id]);
 
-      // --- Canvas redraw + text bounds ---
+      // -----------------------------
+      // 6) Heartbeat: active일 때만 lastActivity 갱신
+      // -----------------------------
+      useInterval(async () => {
+        if (!user || !isLoggedIn || !roomInfo.id) return;
+        try {
+          // 내 lastSeen 갱신
+          await setDoc(
+            doc(db, "artifacts", roomInfo.id, "public", "data", "users", user.uid),
+            { lastSeen: serverTimestamp() },
+            { merge: true }
+          );
+
+          const lobbyRef = doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id);
+          const snap = await getDoc(lobbyRef);
+          const st = snap.exists() ? (snap.data().status || "active") : "active";
+          if (st !== "active") return;
+
+          await setDoc(lobbyRef, { lastActivity: serverTimestamp(), status: "active" }, { merge: true });
+        } catch (e) {
+          console.error("heartbeat error:", e);
+        }
+      }, isLoggedIn ? 15000 : null);
+
+      // -----------------------------
+      // 7) Canvas resize + redraw
+      // -----------------------------
       const redraw = useCallback(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-
         const ctx = canvas.getContext("2d");
         const dpr = window.devicePixelRatio || 1;
-        ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
 
-        const { w, h } = getCanvasWH();
+        // reset transform to avoid cumulative scale
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-        // strokes
+        const wCSS = canvas.clientWidth;
+        const hCSS = canvas.clientHeight;
+        if (!wCSS || !hCSS) return;
+
+        canvas.width = Math.floor(wCSS * dpr);
+        canvas.height = Math.floor(hCSS * dpr);
+
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, wCSS, hCSS);
+
+        // Draw strokes
         data.strokes
-          .filter((s) => (s.page || 1) === currentPage)
-          .forEach((s) => {
+          .filter(s => (s.page || 1) === currentPage)
+          .forEach(s => {
             if (!s.points || s.points.length < 2) return;
             ctx.beginPath();
             ctx.lineCap = "round";
             ctx.lineJoin = "round";
             ctx.strokeStyle = s.color || "#10b981";
-            ctx.lineWidth = s.width || 3;
-            ctx.moveTo(s.points[0].x * w, s.points[0].y * h);
-            s.points.slice(1).forEach((p) => ctx.lineTo(p.x * w, p.y * h));
+            ctx.lineWidth = s.width || 4;
+
+            ctx.moveTo(s.points[0].x * wCSS, s.points[0].y * hCSS);
+            for (let i = 1; i < s.points.length; i++) {
+              const p = s.points[i];
+              ctx.lineTo(p.x * wCSS, p.y * hCSS);
+            }
             ctx.stroke();
-
-            if (selection.strokes.includes(s.id)) {
-              ctx.save();
-              ctx.globalAlpha = 0.5;
-              ctx.lineWidth = (s.width || 3) + 4;
-              ctx.strokeStyle = "#10b981";
-              ctx.beginPath();
-              ctx.moveTo(s.points[0].x * w, s.points[0].y * h);
-              s.points.slice(1).forEach((p) => ctx.lineTo(p.x * w, p.y * h));
-              ctx.stroke();
-              ctx.restore();
-            }
           });
 
-        // texts + bounds
-        const boundsMap = textBoundsRef.current;
-
+        // Draw texts
         data.texts
-          .filter((t) => (t.page || 1) === currentPage)
-          .forEach((t) => {
-            const drawX = (dragGhost.current.active && dragGhost.current.id === t.id && dragGhost.current.x != null)
-              ? dragGhost.current.x
-              : t.x;
-            const drawY = (dragGhost.current.active && dragGhost.current.id === t.id && dragGhost.current.y != null)
-              ? dragGhost.current.y
-              : t.y;
-
-            const px = drawX * w;
-            const py = drawY * h;
-
-            const fontPx = Math.max(16, (t.fontSize || 16) * 2);
+          .filter(t => (t.page || 1) === currentPage)
+          .forEach(t => {
             ctx.fillStyle = t.color || "#ffffff";
-            ctx.font = `${fontPx}px sans-serif`;
-            ctx.textBaseline = "alphabetic";
-            ctx.fillText(t.text || "", px, py);
-
-            const metrics = ctx.measureText(t.text || "");
-            const width = metrics.width || 0;
-            const height = fontPx;
-
-            const x1 = clamp01(px / w);
-            const x2 = clamp01((px + width) / w);
-            const y1 = clamp01((py - height) / h);
-            const y2 = clamp01(py / h);
-
-            boundsMap.set(t.id, { x1, y1, x2, y2, page: t.page || 1 });
-
-            if (selection.texts.includes(t.id)) {
-              ctx.save();
-              ctx.strokeStyle = "#10b981";
-              ctx.lineWidth = 2;
-              ctx.setLineDash([6, 4]);
-              ctx.strokeRect(px - 6, py - height - 6, width + 12, height + 12);
-              ctx.restore();
-            }
+            const px = Math.max(14, (t.fontSize || 16));
+            ctx.font = `${px}px sans-serif`;
+            ctx.fillText(t.text || "", (t.x || 0) * wCSS, (t.y || 0) * hCSS);
           });
+      }, [data.strokes, data.texts, currentPage]);
 
-        // marquee box
-        if (selectBox.active) {
-          const r = normRect(selectBox.x1, selectBox.y1, selectBox.x2, selectBox.y2);
-          ctx.save();
-          ctx.strokeStyle = "#10b981";
-          ctx.lineWidth = 2;
-          ctx.setLineDash([8, 6]);
-          ctx.strokeRect(r.left * w, r.top * h, (r.right - r.left) * w, (r.bottom - r.top) * h);
-          ctx.fillStyle = "rgba(16,185,129,0.08)";
-          ctx.fillRect(r.left * w, r.top * h, (r.right - r.left) * w, (r.bottom - r.top) * h);
-          ctx.restore();
-        }
-      }, [data.strokes, data.texts, currentPage, selection.texts, selection.strokes, selectBox]);
+      useEffect(() => {
+        const onResize = () => redraw();
+        window.addEventListener("resize", onResize);
+        // first paint after mount
+        setTimeout(() => redraw(), 0);
+        return () => window.removeEventListener("resize", onResize);
+      }, [redraw]);
 
       useEffect(() => { redraw(); }, [redraw]);
 
-      // --- resize: scale 누적 방지 ---
-      useEffect(() => {
-        const resize = () => {
-          if (!containerRef.current || !canvasRef.current) return;
-          const { width, height } = containerRef.current.getBoundingClientRect();
-          const dpr = window.devicePixelRatio || 1;
-
-          canvasRef.current.width = width * dpr;
-          canvasRef.current.height = height * dpr;
-
-          const ctx = canvasRef.current.getContext("2d");
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.scale(dpr, dpr);
-
-          canvasRef.current.style.width = `${width}px`;
-          canvasRef.current.style.height = `${height}px`;
-
-          redraw();
+      // -----------------------------
+      // 8) Input helpers
+      // -----------------------------
+      const getPos = (e) => {
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const touch = e.touches && e.touches[0];
+        const clientX = touch ? touch.clientX : e.clientX;
+        const clientY = touch ? touch.clientY : e.clientY;
+        const x = (clientX - rect.left) / rect.width;
+        const y = (clientY - rect.top) / rect.height;
+        return {
+          x: clamp(x, 0, 1),
+          y: clamp(y, 0, 1),
+          rawX: clientX - rect.left,
+          rawY: clientY - rect.top
         };
-        window.addEventListener("resize", resize);
-        resize();
-        return () => window.removeEventListener("resize", resize);
-      }, [redraw]);
-
-      // --- tool change cleanup ---
-      useEffect(() => {
-        document.body.style.cursor =
-          ui.tool === "select" ? "default" : (ui.tool === "text" ? "text" : "crosshair");
-
-        if (ui.tool === "text") {
-          draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0 };
-          dragGhost.current = { active: false, id: null, x: null, y: null };
-          marquee.current = { down: false, startX: 0, startY: 0, started: false };
-          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-          setSelection({ texts: [], strokes: [] });
-        }
-
-        if (ui.tool === "pencil") {
-          setSelection({ texts: [], strokes: [] });
-          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-        }
-      }, [ui.tool]);
-
-      // ✅ submitText: 중복 방지 + UI 먼저 닫기
-      const submitText = async () => {
-        if (submittingText.current) return;
-        submittingText.current = true;
-
-        const trimmed = (textInput.value || "").trim();
-        const snapshot = { ...textInput };
-
-        setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
-
-        try {
-          if (!trimmed) return;
-
-          const payloadBase = {
-            text: trimmed,
-            x: snapshot.x,
-            y: snapshot.y,
-            color: ui.color,
-            fontSize: ui.width * 2,
-            page: currentPage,
-            userId: user.uid,
-            userName: roomInfo.nickname,
-            updatedAt: serverTimestamp()
-          };
-
-          if (snapshot.mode === "edit" && snapshot.targetId) {
-            await docRef("artifacts", roomInfo.id, "public", "data", "texts", snapshot.targetId).update(payloadBase);
-            setSelection({ texts: [snapshot.targetId], strokes: [] });
-          } else {
-            const added = await col("artifacts", roomInfo.id, "public", "data", "texts").add({
-              ...payloadBase,
-              timestamp: serverTimestamp()
-            });
-            setSelection({ texts: [added.id], strokes: [] });
-          }
-
-          docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
-            { lastActivity: serverTimestamp() },
-            { merge: true }
-          );
-        } catch (err) {
-          console.error("Text submit failed:", err);
-        } finally {
-          submittingText.current = false;
-        }
       };
 
-      // --- Pointer Handlers ---
-      const onPointerDown = (e) => {
+      const drawStart = (e) => {
         if (!isLoggedIn) return;
-        if (textInput.active) return;
-
-        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-
+        if (!canEdit) return; // ✅ 참석자는 보기만
         const pos = getPos(e);
-        downPosPx.current = { x: pos.rawX, y: pos.rawY };
 
         if (ui.tool === "text") {
-          setSelection({ texts: [], strokes: [] });
-          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-
           setTextInput({
             active: true,
             x: pos.x, y: pos.y,
             rawX: pos.rawX, rawY: pos.rawY,
-            value: "",
-            mode: "create",
-            targetId: null
+            value: ""
           });
           return;
         }
 
-        if (ui.tool === "select") {
-          const hit = hitTestText(pos.x, pos.y);
-
-          if (hit) {
-            setSelection({ texts: [hit.id], strokes: [] });
-
-            const ox = pos.x - (hit.x || 0);
-            const oy = pos.y - (hit.y || 0);
-            draggingText.current = { active: true, id: hit.id, offsetX: ox, offsetY: oy };
-            dragGhost.current = { active: true, id: hit.id, x: hit.x, y: hit.y };
-
-            marquee.current = { down: false, startX: 0, startY: 0, started: false };
-            setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-          } else {
-            setSelection({ texts: [], strokes: [] });
-            marquee.current = { down: true, startX: pos.x, startY: pos.y, started: false };
-            setSelectBox({ active: false, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y });
-
-            draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0 };
-            dragGhost.current = { active: false, id: null, x: null, y: null };
-          }
-          return;
-        }
-
-        if (ui.tool === "pencil") {
-          setSelection({ texts: [], strokes: [] });
-          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-
-          drawing.current.isDrawing = true;
-          drawing.current.points = [{ x: pos.x, y: pos.y }];
-          return;
-        }
+        drawingRef.current.isDrawing = true;
+        drawingRef.current.points = [{ x: pos.x, y: pos.y }];
       };
 
-      const onPointerMove = (e) => {
-        if (textInput.active) return;
+      const drawMove = (e) => {
+        if (!drawingRef.current.isDrawing) return;
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext("2d");
         const pos = getPos(e);
+        const pts = drawingRef.current.points;
+        pts.push({ x: pos.x, y: pos.y });
 
-        if (ui.tool === "select" && draggingText.current.active && draggingText.current.id) {
-          const nx = clamp01(pos.x - draggingText.current.offsetX);
-          const ny = clamp01(pos.y - draggingText.current.offsetY);
-          dragGhost.current = { active: true, id: draggingText.current.id, x: nx, y: ny };
-          redraw();
-          return;
-        }
+        // draw incremental
+        const wCSS = canvas.clientWidth;
+        const hCSS = canvas.clientHeight;
 
-        if (ui.tool === "select" && marquee.current.down) {
-          const dx = Math.abs(pos.rawX - downPosPx.current.x);
-          const dy = Math.abs(pos.rawY - downPosPx.current.y);
-          const threshold = 6;
-
-          if (!marquee.current.started && (dx > threshold || dy > threshold)) {
-            marquee.current.started = true;
-            setSelectBox((b) => ({ ...b, active: true }));
-          }
-
-          if (marquee.current.started) {
-            setSelectBox({ active: true, x1: marquee.current.startX, y1: marquee.current.startY, x2: pos.x, y2: pos.y });
-          }
-          return;
-        }
-
-        if (ui.tool === "pencil" && drawing.current.isDrawing) {
-          drawing.current.points.push({ x: pos.x, y: pos.y });
-
-          const ctx = canvasRef.current.getContext("2d");
-          const { w, h } = getCanvasWH();
-          const pts = drawing.current.points;
-          const last = pts[pts.length - 2];
-
-          ctx.beginPath();
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.strokeStyle = ui.color;
-          ctx.lineWidth = ui.width;
-          ctx.moveTo(last.x * w, last.y * h);
-          ctx.lineTo(pos.x * w, pos.y * h);
-          ctx.stroke();
-        }
+        const last = pts[pts.length - 2];
+        ctx.beginPath();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.strokeStyle = ui.color;
+        ctx.lineWidth = ui.width;
+        ctx.moveTo(last.x * wCSS, last.y * hCSS);
+        ctx.lineTo(pos.x * wCSS, pos.y * hCSS);
+        ctx.stroke();
       };
 
-      const onPointerUp = async () => {
-        if (ui.tool === "select" && draggingText.current.active && draggingText.current.id) {
-          const id = draggingText.current.id;
-          const finalX = dragGhost.current.x;
-          const finalY = dragGhost.current.y;
+      const drawEnd = async () => {
+        if (!drawingRef.current.isDrawing) return;
+        drawingRef.current.isDrawing = false;
 
-          draggingText.current = { active: false, id: null, offsetX: 0, offsetY: 0 };
-          dragGhost.current = { active: false, id: null, x: null, y: null };
+        const pts = drawingRef.current.points;
+        if (!pts || pts.length < 2) return;
 
-          if (finalX != null && finalY != null) {
-            try {
-              await docRef("artifacts", roomInfo.id, "public", "data", "texts", id).update({
-                x: finalX,
-                y: finalY,
-                updatedAt: serverTimestamp()
-              });
-
-              docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
-                { lastActivity: serverTimestamp() },
-                { merge: true }
-              );
-            } catch (err) {
-              console.error("Text move update failed:", err);
-            }
-          }
-
-          redraw();
-          return;
-        }
-
-        if (ui.tool === "select" && marquee.current.down) {
-          const wasStarted = marquee.current.started;
-          marquee.current = { down: false, startX: 0, startY: 0, started: false };
-
-          if (wasStarted) {
-            const box = { ...selectBox };
-            const selected = computeSelectionFromBox(box);
-            setSelection(selected);
-            setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-          } else {
-            setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-          }
-          redraw();
-          return;
-        }
-
-        if (ui.tool === "pencil" && drawing.current.isDrawing) {
-          drawing.current.isDrawing = false;
-          if (drawing.current.points.length < 2) return;
-
-          try {
-            await col("artifacts", roomInfo.id, "public", "data", "strokes").add({
-              points: drawing.current.points,
+        try {
+          await addDoc(
+            collection(db, "artifacts", roomInfo.id, "public", "data", "strokes"),
+            {
+              points: pts,
               color: ui.color,
               width: ui.width,
               page: currentPage,
               userId: user.uid,
               userName: roomInfo.nickname,
               timestamp: serverTimestamp()
-            });
+            }
+          );
 
-            docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
-              { lastActivity: serverTimestamp() },
-              { merge: true }
-            );
-          } catch (err) {
-            console.error("Stroke add failed:", err);
-          }
-        }
-      };
-
-      const onDoubleClick = (e) => {
-        if (!isLoggedIn) return;
-        if (ui.tool !== "select") return;
-        if (textInput.active) return;
-
-        const pos = getPos(e);
-        const hit = hitTestText(pos.x, pos.y);
-        if (!hit) return;
-
-        setSelection({ texts: [hit.id], strokes: [] });
-        setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-
-        setTextInput({
-          active: true,
-          x: hit.x, y: hit.y,
-          rawX: pos.rawX, rawY: pos.rawY,
-          value: hit.text || "",
-          mode: "edit",
-          targetId: hit.id
-        });
-      };
-
-      const undoLast = async () => {
-        if (!user) return;
-
-        const myStrokes = data.strokes.filter((s) => s.userId === user.uid && (s.page || 1) === currentPage);
-        const myTexts = data.texts.filter((t) => t.userId === user.uid && (t.page || 1) === currentPage);
-
-        const lastStroke = myStrokes[myStrokes.length - 1];
-        const lastText = myTexts[myTexts.length - 1];
-        if (!lastStroke && !lastText) return;
-
-        let target;
-        if (!lastStroke) target = { id: lastText.id, col: "texts" };
-        else if (!lastText) target = { id: lastStroke.id, col: "strokes" };
-        else {
-          const sTime = lastStroke.timestamp?.toMillis?.() || 0;
-          const tTime = lastText.timestamp?.toMillis?.() || 0;
-          target = sTime > tTime ? { id: lastStroke.id, col: "strokes" } : { id: lastText.id, col: "texts" };
-        }
-
-        try {
-          await docRef("artifacts", roomInfo.id, "public", "data", target.col, target.id).delete();
-          setSelection((p) => ({
-            texts: p.texts.filter(x => x !== target.id),
-            strokes: p.strokes.filter(x => x !== target.id),
-          }));
-        } catch (err) {
-          console.error("Undo delete failed:", err);
-        }
-      };
-
-      // ✅ 선택 영역 일괄 삭제 (texts + strokes)
-      const deleteSelectionBatch = async () => {
-        const total = selection.texts.length + selection.strokes.length;
-        if (total === 0) return;
-
-        if (!confirm(`선택된 항목 ${total}개를 삭제할까요?`)) return;
-
-        try {
-          const batch = db.batch();
-
-          for (const id of selection.texts) {
-            batch.delete(docRef("artifacts", roomInfo.id, "public", "data", "texts", id));
-          }
-          for (const id of selection.strokes) {
-            batch.delete(docRef("artifacts", roomInfo.id, "public", "data", "strokes", id));
-          }
-
-          await batch.commit();
-
-          setSelection({ texts: [], strokes: [] });
-          setSelectBox({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 });
-
-          docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
-            { lastActivity: serverTimestamp() },
+          await setDoc(
+            doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id),
+            { lastActivity: serverTimestamp(), status: "active" },
             { merge: true }
           );
-        } catch (err) {
-          console.error("Batch delete failed:", err);
-          alert("삭제에 실패했습니다. 콘솔 로그를 확인해주세요.");
+        } catch (e) {
+          console.error("add stroke failed:", e);
+          alert("그리기 저장 실패(규칙/권한/네트워크). 콘솔 확인!");
         }
       };
 
-      // ✅ 새 회의 만들기: 로비 문서 존재 여부 확인 후 중복 방지(트랜잭션)
-      const createRoomUnique = async () => {
-        const makeId = () => "Room-" + Math.random().toString(36).substring(2, 7).toUpperCase();
+      const submitText = async () => {
+        const v = (textInput.value || "").trim();
+        setTextInput(p => ({ ...p, active: false }));
 
-        for (let i = 0; i < 8; i++) {
-          const rid = makeId();
-          const lobbyRoomDoc = docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", rid);
+        if (!v) return;
+        if (!canEdit) return;
 
-          try {
-            const ok = await db.runTransaction(async (tx) => {
-              const snap = await tx.get(lobbyRoomDoc);
-              if (snap.exists) return false;
-              tx.set(lobbyRoomDoc, {
-                roomId: rid,
-                createdAt: serverTimestamp(),
-                lastActivity: serverTimestamp(),
-                activeUserCount: 0
-              }, { merge: true });
-              return true;
-            });
-
-            if (ok) {
-              setRoomInfo((p) => ({ ...p, id: rid }));
-              return;
+        try {
+          await addDoc(
+            collection(db, "artifacts", roomInfo.id, "public", "data", "texts"),
+            {
+              text: v,
+              x: textInput.x,
+              y: textInput.y,
+              color: ui.color,
+              fontSize: Math.max(14, ui.width * 4),
+              page: currentPage,
+              userId: user.uid,
+              userName: roomInfo.nickname,
+              timestamp: serverTimestamp()
             }
-          } catch (err) {
-            console.error("createRoomUnique tx failed:", err);
-          }
+          );
+
+          await setDoc(
+            doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id),
+            { lastActivity: serverTimestamp(), status: "active" },
+            { merge: true }
+          );
+        } catch (e) {
+          console.error("add text failed:", e);
+          alert("텍스트 저장 실패(규칙/권한/네트워크). 콘솔 확인!");
         }
-        alert("방 생성에 실패했습니다. 다시 시도해주세요.");
       };
 
-      // ✅ 입장하기: 로비(고정)에서 방 존재 확인 → 없으면 생성, 있으면 join
+      // -----------------------------
+      // 9) Save PNG
+      // -----------------------------
+      const exportBoardAsImage = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        // ensure latest redraw before export
+        redraw();
+        const url = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `board_${roomInfo.id}_p${currentPage}_${nowISO()}.png`;
+        a.click();
+      };
+
+      // -----------------------------
+      // 10) End Room (방장)
+      // -----------------------------
+      const endRoom = async () => {
+        if (!isOwner) return;
+        const ok = confirm("회의를 종료할까요? (로비에서 방이 숨김 처리됩니다)");
+        if (!ok) return;
+
+        try {
+          const lobbyRef = doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id);
+          const metaRef  = doc(db, "artifacts", roomInfo.id, "public", "data", "room_meta", "meta");
+
+          const batch = writeBatch(db);
+          batch.set(lobbyRef, {
+            roomId: roomInfo.id,
+            status: "closed",
+            endedAt: serverTimestamp(),
+            lastActivity: serverTimestamp(),
+            activeUserCount: 0
+          }, { merge: true });
+
+          batch.set(metaRef, {
+            status: "closed",
+            endedAt: serverTimestamp()
+          }, { merge: true });
+
+          await batch.commit();
+          alert("회의가 종료되었습니다. 로비에서 숨김 처리됩니다.");
+          window.location.reload();
+        } catch (e) {
+          console.error("endRoom failed:", e);
+          alert("회의 종료 실패. 콘솔 로그를 확인해주세요.");
+        }
+      };
+
+      // -----------------------------
+      // 11) Login / Create room (closed 방 재입장 차단)
+      // -----------------------------
+      const generateNewRoomId = () => {
+        const randomId = "Room-" + Math.random().toString(36).substring(2, 7).toUpperCase();
+        setRoomInfo(p => ({ ...p, id: randomId }));
+      };
+
       const handleLogin = async (e) => {
         e.preventDefault();
-        const nick = roomInfo.nickname.trim();
-        const rid = roomInfo.id.trim();
+        const nick = (roomInfo.nickname || "").trim();
+        const rid  = (roomInfo.id || "").trim();
         if (!nick || !rid) return;
 
         localStorage.setItem("eboard_nick", nick);
 
-        const lobbyRoomDoc = docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", rid);
-        const snap = await lobbyRoomDoc.get();
+        try {
+          const lobbyRef = doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", rid);
+          const snap = await getDoc(lobbyRef);
 
-        if (!snap.exists) {
-          await lobbyRoomDoc.set({
-            roomId: rid,
-            createdAt: serverTimestamp(),
-            lastActivity: serverTimestamp(),
-            activeUserCount: 0
-          }, { merge: true });
-        } else {
-          await lobbyRoomDoc.set({ lastActivity: serverTimestamp() }, { merge: true });
+          if (snap.exists()) {
+            const st = snap.data().status || "active";
+            if (st === "closed") {
+              alert("이 방은 종료된 회의입니다. 다른 방 이름으로 생성하거나 다른 방에 입장하세요.");
+              return;
+            }
+            await setDoc(lobbyRef, { lastActivity: serverTimestamp(), status: "active", roomId: rid }, { merge: true });
+          } else {
+            await setDoc(lobbyRef, {
+              roomId: rid,
+              status: "active",
+              createdAt: serverTimestamp(),
+              lastActivity: serverTimestamp(),
+              activeUserCount: 0
+            }, { merge: true });
+          }
+
+          // ✅ room_meta/meta는 “첫 생성자 = 방장”
+          if (user?.uid) {
+            await ensureRoomMetaOwner(rid, user.uid);
+          }
+
+          setIsLoggedIn(true);
+        } catch (e2) {
+          console.error("handleLogin failed:", e2);
+          alert("입장 실패. Firestore 활성화/규칙/인덱스를 확인하세요.");
         }
-
-        setIsLoggedIn(true);
       };
 
-      // --- Login page ---
+      // user가 로그인 이후 확보되면 meta owner 보강(늦게 user가 잡히는 경우)
+      useEffect(() => {
+        if (!isLoggedIn) return;
+        if (!user?.uid) return;
+        if (!roomInfo.id) return;
+        ensureRoomMetaOwner(roomInfo.id, user.uid).catch(e => console.error("ensureRoomMetaOwner failed:", e));
+      }, [isLoggedIn, user, roomInfo.id]);
+
+      // -----------------------------
+      // 12) Chat send
+      // -----------------------------
+      const sendChat = async (e) => {
+        e.preventDefault();
+        const v = (ui.msg || "").trim();
+        if (!v) return;
+
+        setUi(p => ({ ...p, msg: "" }));
+
+        try {
+          await addDoc(
+            collection(db, "artifacts", roomInfo.id, "public", "data", "messages"),
+            {
+              text: v,
+              userId: user.uid,
+              userName: roomInfo.nickname,
+              timestamp: serverTimestamp()
+            }
+          );
+
+          await setDoc(
+            doc(db, "artifacts", globalAppId, "public", "data", "active_rooms", roomInfo.id),
+            { lastActivity: serverTimestamp(), status: "active" },
+            { merge: true }
+          );
+        } catch (e2) {
+          console.error("sendChat failed:", e2);
+          alert("채팅 전송 실패. 콘솔 확인!");
+        }
+      };
+
+      // -----------------------------
+      // UI: Login screen
+      // -----------------------------
       if (!isLoggedIn) {
-        return (
-          <div className="h-screen w-full flex items-center justify-center bg-gray-900 p-6 overflow-y-auto">
-            <div className="max-w-4xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
-              <div className="bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl space-y-6">
-                <div>
-                  <h1 className="text-3xl font-black text-white bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 uppercase tracking-tighter">
-                    E-Board Collab
-                  </h1>
-                  <p className="text-gray-400 text-sm mt-1">실시간 협업을 위한 스마트 칠판</p>
-                  <p className="text-[10px] text-gray-500 mt-2 font-mono">LOBBY: {LOBBY_ID}</p>
-                </div>
+        return h("div", { className: "h-screen w-full flex items-center justify-center bg-gray-900 p-6 overflow-y-auto" },
+          h("div", { className: "max-w-5xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 items-start" },
 
-                <form onSubmit={handleLogin} className="space-y-4">
-                  <div className="space-y-4">
-                    <div>
-                      <label className="text-[10px] text-gray-500 mb-1 block uppercase font-bold tracking-widest">
-                        사용자 닉네임
-                      </label>
-                      <input
-                        type="text"
-                        value={roomInfo.nickname}
-                        onChange={(e) => setRoomInfo((p) => ({ ...p, nickname: e.target.value }))}
-                        className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition"
-                        placeholder="이름을 입력하세요"
-                        required
-                      />
-                    </div>
+            // Left: login
+            h("div", { className: "bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl space-y-6" },
+              h("div", null,
+                h("h1", { className: "text-3xl font-black text-white bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 uppercase tracking-tighter" }, "E-Board Collab"),
+                h("p", { className: "text-gray-400 text-sm mt-1" }, "실시간 협업 칠판 (참석자는 기본 뷰 / 방장만 편집)")
+              ),
 
-                    <div className="pt-2">
-                      <div className="flex justify-between items-end mb-1">
-                        <label className="text-[10px] text-gray-500 uppercase font-bold tracking-widest">
-                          방 이름 (ID)
-                        </label>
-                        <button
-                          type="button"
-                          onClick={createRoomUnique}
-                          className="text-[10px] text-emerald-400 font-bold hover:underline flex items-center gap-1"
-                          title="중복 방지 생성"
-                        >
-                          <Icons.Plus /> 새 회의 만들기(중복방지)
-                        </button>
-                      </div>
-                      <input
-                        type="text"
-                        value={roomInfo.id}
-                        onChange={(e) => setRoomInfo((p) => ({ ...p, id: e.target.value }))}
-                        className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition"
-                        placeholder="예: EcoBio, Project1"
-                        required
-                      />
-                      <div className="text-[10px] text-gray-500 mt-2 leading-relaxed">
-                        같은 방으로 들어가려면 <span className="text-gray-300 font-bold">방 이름을 똑같이</span> 입력하면 됩니다.<br/>
-                        이미 존재하는 방이면 자동으로 <span className="text-gray-300 font-bold">입장(Join)</span> 처리됩니다.
-                      </div>
-                    </div>
-                  </div>
+              h("form", { onSubmit: handleLogin, className: "space-y-4" },
+                h("div", { className: "space-y-4" },
 
-                  <button
-                    type="submit"
-                    className="w-full bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-emerald-500/20 uppercase tracking-widest mt-4"
-                  >
-                    입장하기
-                  </button>
-                </form>
-              </div>
+                  h("div", null,
+                    h("label", { className: "text-[10px] text-gray-500 mb-1 block uppercase font-bold tracking-widest" }, "사용자 닉네임"),
+                    h("input", {
+                      type: "text",
+                      value: roomInfo.nickname,
+                      onChange: (e) => setRoomInfo(p => ({ ...p, nickname: e.target.value })),
+                      className: "w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition",
+                      placeholder: "이름을 입력하세요",
+                      required: true
+                    })
+                  ),
 
-              {/* Lobby list */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between px-2">
-                  <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">활동 중인 회의 목록</h2>
-                  <span className="text-[10px] bg-gray-800 text-gray-500 px-2 py-0.5 rounded-full border border-gray-700">
-                    Lobby
-                  </span>
-                </div>
+                  h("div", { className: "pt-2" },
+                    h("div", { className: "flex justify-between items-end mb-1" },
+                      h("label", { className: "text-[10px] text-gray-500 uppercase font-bold tracking-widest" }, "방 이름 (ID)"),
+                      h("button", {
+                        type: "button",
+                        onClick: generateNewRoomId,
+                        className: "text-[10px] text-emerald-400 font-bold hover:underline flex items-center gap-1"
+                      }, "+ 새 회의 만들기")
+                    ),
+                    h("input", {
+                      type: "text",
+                      value: roomInfo.id,
+                      onChange: (e) => setRoomInfo(p => ({ ...p, id: e.target.value })),
+                      className: "w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-emerald-500 outline-none transition",
+                      placeholder: "예: ECOBIO, Project1",
+                      required: true
+                    }),
+                    h("div", { className: "mt-2 text-[11px] text-gray-500 leading-relaxed" },
+                      "※ 로비에는 최근 24시간 활동한 방만 표시됩니다. ",
+                      "방장이 END ROOM을 누르면 로비에서 숨김 처리됩니다."
+                    )
+                  )
+                ),
 
-                <div className="space-y-2 max-h-[480px] overflow-y-auto pr-2 custom-scrollbar">
-                  {activeRooms.length === 0 ? (
-                    <div className="p-12 border-2 border-dashed border-gray-800 rounded-3xl text-center flex flex-col items-center gap-3">
-                      <div className="p-3 bg-gray-800 rounded-full text-gray-600">
-                        <Icons.Users />
-                      </div>
-                      <div className="text-gray-600 text-sm font-medium">
-                        현재 진행 중인 회의가 없습니다.
-                        <br />
-                        <span className="text-xs opacity-60">새 회의를 직접 만들어보세요!</span>
-                      </div>
-                    </div>
-                  ) : (
-                    activeRooms.map((room) => (
-                      <button
-                        key={room.id}
-                        onClick={() => setRoomInfo((p) => ({ ...p, id: room.id }))}
-                        className="w-full room-card bg-gray-800/40 hover:bg-gray-800 border border-gray-700/50 hover:border-emerald-500/50 p-5 rounded-2xl flex justify-between items-center transition group text-left shadow-sm"
-                      >
-                        <div className="space-y-1">
-                          <div className="text-emerald-400 font-black text-xl tracking-tight uppercase">{room.id}</div>
-                          <div className="flex items-center gap-2 text-[10px] text-gray-500 font-mono">
-                            <Icons.Users />
-                            <span>
-                              최근 활동:{" "}
-                              {room.lastActivity?.toMillis?.()
-                                ? new Date(room.lastActivity.toMillis()).toLocaleTimeString()
-                                : "방금 전"}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="h-10 w-10 flex items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-all">
-                          →
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+                h("button", {
+                  type: "submit",
+                  className: "w-full bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-4 rounded-xl transition shadow-lg shadow-emerald-500/20 uppercase tracking-widest mt-4"
+                }, "입장하기")
+              )
+            ),
+
+            // Right: Lobby list
+            h("div", { className: "space-y-4" },
+              h("div", { className: "flex items-center justify-between px-2" },
+                h("h2", { className: "text-xs font-bold text-gray-400 uppercase tracking-widest" }, "최근 24시간 활동 방"),
+                h("span", { className: "text-[10px] bg-gray-800 text-gray-500 px-2 py-0.5 rounded-full border border-gray-700" }, "Lobby")
+              ),
+
+              h("div", { className: "space-y-2 max-h-[520px] overflow-y-auto pr-2 custom-scrollbar" },
+                activeRooms.length === 0
+                  ? h("div", { className: "p-12 border-2 border-dashed border-gray-800 rounded-3xl text-center flex flex-col items-center gap-3" },
+                      h("div", { className: "p-3 bg-gray-800 rounded-full text-gray-600" }, "👥"),
+                      h("div", { className: "text-gray-600 text-sm font-medium" },
+                        "현재 진행 중인 회의가 없습니다.",
+                        h("br"),
+                        h("span", { className: "text-xs opacity-60" }, "새 회의를 직접 만들어보세요!")
+                      )
+                    )
+                  : activeRooms.map(room =>
+                      h("button", {
+                        key: room.id,
+                        onClick: () => setRoomInfo(p => ({ ...p, id: room.id })),
+                        className: "w-full room-card bg-gray-800/40 hover:bg-gray-800 border border-gray-700/50 hover:border-emerald-500/50 p-5 rounded-2xl flex justify-between items-center transition group text-left shadow-sm"
+                      },
+                        h("div", { className: "space-y-1" },
+                          h("div", { className: "text-emerald-400 font-black text-xl tracking-tight uppercase" }, room.id),
+                          h("div", { className: "flex items-center gap-2 text-[10px] text-gray-500 font-mono" },
+                            "🕒 ",
+                            "최근 활동: ",
+                            room.lastActivity?.toMillis ? new Date(room.lastActivity.toMillis()).toLocaleTimeString() : "방금 전"
+                          )
+                        ),
+                        h("div", { className: "h-10 w-10 flex items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-all" }, "→")
+                      )
+                    )
+              )
+            )
+          )
         );
       }
 
-      // --- Board page ---
-      const selectedCount = selection.texts.length + selection.strokes.length;
+      // -----------------------------
+      // Board UI
+      // -----------------------------
+      const myName = roomInfo.nickname || "Me";
+      const onlineCount = data.users.length;
 
-      return (
-        <div className="h-screen w-full flex flex-col bg-gray-950 text-white overflow-hidden">
-          <header className="h-14 glass-panel border-b border-gray-800 flex items-center justify-between px-6 z-20">
-            <div className="flex items-center gap-4">
-              <span className="font-black text-lg text-emerald-400 tracking-tighter">BOARD.</span>
-              <div className="h-6 w-px bg-gray-800 mx-1" />
-              <div className="flex items-center gap-2 text-[10px] font-mono text-gray-400 bg-gray-900 px-3 py-1 rounded-full border border-gray-800">
-                <span className="text-white">ROOM: {roomInfo.id}</span>
-                <span className="text-emerald-500 font-bold uppercase">● {data.users.length} ONLINE</span>
-              </div>
-              {ui.tool === "select" && selectedCount > 0 && (
-                <div className="ml-2 text-[10px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full">
-                  SELECTED: {selectedCount}
-                </div>
-              )}
-            </div>
+      return h("div", { className: "h-screen w-full flex flex-col bg-gray-950 text-white overflow-hidden" },
 
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                className="p-1 hover:bg-gray-800 rounded text-gray-400 disabled:opacity-40"
-                disabled={currentPage === 1}
-              >
-                ◀
-              </button>
-              <span className="text-xs font-bold font-mono">P. {currentPage}</span>
-              <button onClick={() => setCurrentPage((p) => p + 1)} className="p-1 hover:bg-gray-800 rounded text-gray-400">
-                ▶
-              </button>
+        // Header
+        h("header", { className: "h-14 glass-panel border-b border-gray-800 flex items-center justify-between px-6 z-20 relative" },
+          h("div", { className: "flex items-center gap-4" },
+            h("span", { className: "font-black text-lg text-emerald-400 tracking-tighter" }, "BOARD."),
+            h("div", { className: "h-6 w-px bg-gray-800 mx-1" }),
+            h("div", { className: "flex items-center gap-2 text-[10px] font-mono text-gray-400 bg-gray-900 px-3 py-1 rounded-full border border-gray-800" },
+              h("span", { className: "text-white" }, `ROOM: ${roomInfo.id}`),
+              h("span", { className: "text-emerald-500 font-bold uppercase" }, `● ${onlineCount} ONLINE`),
+              isOwner ? h("span", { className: "ml-2 text-[10px] text-emerald-300 font-bold" }, "(방장)") : h("span", { className: "ml-2 text-[10px] text-gray-400" }, "(뷰)")
+            )
+          ),
 
-              <div className="h-6 w-px bg-gray-800 mx-1" />
-              <button
-                onClick={() => setUi((p) => ({ ...p, showChat: !p.showChat }))}
-                className={`p-2 rounded-lg transition ${ui.showChat ? "bg-emerald-500/20 text-emerald-400" : "hover:bg-gray-800"}`}
-              >
-                💬
-              </button>
-              <button
-                onClick={() => { if (confirm("회의에서 나가시겠습니까?")) window.location.reload(); }}
-                className="p-2 text-xs font-bold text-gray-500 hover:text-white transition"
-              >
-                LEAVE
-              </button>
-            </div>
-          </header>
+          h("div", { className: "flex items-center gap-2" },
+            IconBtn({
+              title: "참석자",
+              onClick: () => setUi(p => ({ ...p, showUsers: !p.showUsers })),
+              active: ui.showUsers
+            }, "👥"),
 
-          <div className="flex-1 flex relative">
-            <div
-              ref={containerRef}
-              className="flex-1 relative overflow-hidden bg-[radial-gradient(#1f2937_1px,transparent_1px)] [background-size:24px_24px]"
-            >
-              <canvas
-                ref={canvasRef}
-                onPointerDown={onPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onPointerCancel={onPointerUp}
-                onDoubleClick={onDoubleClick}
-                className="block"
-                style={{
-                  touchAction: (ui.tool === "pencil") ? "none" : "auto",
-                  pointerEvents: textInput.active ? "none" : "auto"
-                }}
-              />
+            h("div", { className: "h-6 w-px bg-gray-800 mx-1" }),
 
-              {textInput.active && (
-                <input
-                  ref={textRef}
-                  type="text"
-                  className="text-input-overlay"
-                  style={{
-                    left: textInput.rawX,
-                    top: textInput.rawY - (ui.width * 2),
-                    color: ui.color,
-                    fontSize: `${Math.max(16, ui.width * 4)}px`
-                  }}
-                  value={textInput.value}
-                  onChange={(e) => setTextInput((p) => ({ ...p, value: e.target.value }))}
-                  onBlur={submitText}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      submitText();
-                      e.currentTarget.blur();
-                    }
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setTextInput({ active: false, x: 0, y: 0, rawX: 0, rawY: 0, value: "", mode: "create", targetId: null });
-                    }
-                  }}
-                  autoFocus
-                />
-              )}
+            IconBtn({
+              title: "이전 페이지",
+              onClick: () => setCurrentPage(p => Math.max(1, p - 1)),
+              disabled: currentPage === 1
+            }, "◀"),
+            h("span", { className: "text-xs font-bold font-mono px-2" }, `P. ${currentPage}`),
+            IconBtn({
+              title: "다음 페이지",
+              onClick: () => setCurrentPage(p => p + 1)
+            }, "▶"),
 
-              {/* Bottom Tool Bar */}
-              <div className="absolute bottom-8 left-1/2 -translate-x-1/2 glass-panel border border-gray-700 px-6 py-3 rounded-3xl flex items-center gap-6 shadow-2xl">
-                <div className="flex gap-2 p-1 bg-gray-900/50 rounded-xl">
-                  <button
-                    onClick={() => setUi((p) => ({ ...p, tool: "pencil" }))}
-                    className={`p-2 rounded-lg transition ${ui.tool === "pencil" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white"}`}
-                    title="펜"
-                  >
-                    <Icons.Pencil />
-                  </button>
-                  <button
-                    onClick={() => setUi((p) => ({ ...p, tool: "text" }))}
-                    className={`p-2 rounded-lg transition ${ui.tool === "text" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white"}`}
-                    title="텍스트 추가"
-                  >
-                    <Icons.Text />
-                  </button>
-                  <button
-                    onClick={() => setUi((p) => ({ ...p, tool: "select" }))}
-                    className={`p-2 rounded-lg transition ${ui.tool === "select" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white"}`}
-                    title="선택/영역 선택"
-                  >
-                    <Icons.Select />
-                  </button>
-                </div>
+            h("div", { className: "h-6 w-px bg-gray-800 mx-1" }),
 
-                <div className="flex gap-3">
-                  {["#10b981", "#ef4444", "#3b82f6", "#ffffff"].map((c) => (
-                    <button
-                      key={c}
-                      onClick={() => setUi((p) => ({ ...p, color: c }))}
-                      className={`w-6 h-6 rounded-full border-2 ${ui.color === c ? "border-white scale-110 ring-4 ring-white/10" : "border-transparent opacity-60"}`}
-                      style={{ backgroundColor: c }}
-                      title="색상"
-                    />
-                  ))}
-                </div>
+            IconBtn({
+              title: "채팅 패널",
+              onClick: () => setUi(p => ({ ...p, showChat: !p.showChat })),
+              active: ui.showChat
+            }, "💬"),
 
-                <div className="flex gap-2">
-                  <button onClick={undoLast} className="p-2 hover:bg-gray-700 rounded-xl text-gray-400 hover:text-white" title="Undo">
-                    <Icons.Undo />
-                  </button>
+            IconBtn({
+              title: "PNG 저장",
+              onClick: exportBoardAsImage
+            }, "🖼️"),
 
-                  <button
-                    onClick={deleteSelectionBatch}
-                    disabled={selectedCount === 0}
-                    className={`p-2 rounded-xl transition ${selectedCount > 0 ? "hover:bg-red-500/20 text-gray-400 hover:text-red-400" : "opacity-40 text-gray-500 cursor-not-allowed"}`}
-                    title="선택 항목 일괄 삭제"
-                  >
-                    <Icons.Trash />
-                  </button>
-                </div>
+            isOwner ? IconBtn({
+              title: "회의 종료 (방장)",
+              onClick: endRoom,
+              className: " !text-red-300 hover:!bg-red-500/20 "
+            }, "END") : null,
 
-                {ui.tool === "select" && (
-                  <div className="hidden md:block text-[10px] text-gray-400 font-mono">
-                    텍스트 클릭: 선택 · 텍스트 드래그: 이동 · 텍스트 더블클릭: 수정 · 빈 곳 드래그: 영역 선택 · 🗑: 일괄 삭제
-                  </div>
-                )}
-              </div>
-            </div>
+            h("button", {
+              onClick: () => { if (confirm("회의에서 나가시겠습니까?")) window.location.reload(); },
+              className: "p-2 text-xs font-bold text-gray-500 hover:text-white transition"
+            }, "LEAVE")
+          ),
 
-            {/* Chat panel */}
-            <div className={`transition-all duration-300 ${ui.showChat ? "w-80 border-l border-gray-800" : "w-0 overflow-hidden"} flex flex-col glass-panel`}>
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {data.messages.map((m, i) => (
-                  <div key={m.id || i} className={`flex flex-col ${m.userId === user?.uid ? "items-end" : "items-start"}`}>
-                    <span className="text-[10px] text-gray-500 mb-1 px-1 font-mono uppercase tracking-tighter">{m.userName}</span>
-                    <div className={`max-w-[90%] px-3 py-2 text-sm rounded-2xl shadow-sm ${m.userId === user?.uid ? "bg-emerald-600 text-white rounded-tr-none" : "bg-gray-800 text-gray-200 rounded-tl-none border border-gray-700/50"}`}>
-                      {m.text}
-                    </div>
-                  </div>
-                ))}
-              </div>
+          // Users panel
+          ui.showUsers ? h("div", { className: "absolute top-14 left-6 w-72 glass-panel border border-gray-800 rounded-2xl p-3 z-30" },
+            h("div", { className: "text-xs text-gray-300 font-bold mb-2 flex items-center justify-between" },
+              h("span", null, "참석자"),
+              h("span", { className: "text-[10px] text-gray-500 font-mono" }, `${onlineCount}`)
+            ),
+            h("div", { className: "space-y-2 max-h-64 overflow-auto pr-1" },
+              data.users
+                .slice()
+                .sort((a,b) => (a.uid === ownerUid ? -1 : 0) - (b.uid === ownerUid ? -1 : 0))
+                .map(u => h("div", {
+                  key: u.id,
+                  className: "flex items-center justify-between bg-gray-900/40 border border-gray-800 rounded-xl px-3 py-2"
+                },
+                  h("div", { className: "flex flex-col" },
+                    h("div", { className: "text-sm text-white" },
+                      u.name || "Unknown",
+                      (u.uid === ownerUid) ? h("span", { className: "ml-2 text-[10px] text-emerald-400 font-bold" }, "(방장)") : null,
+                      (u.uid !== ownerUid) ? h("span", { className: "ml-2 text-[10px] text-gray-400" }, "(뷰)") : null
+                    ),
+                    h("div", { className: "text-[10px] text-gray-500 font-mono" }, (u.uid || "").slice(0, 8))
+                  ),
+                  h("div", { className: "text-[10px] text-gray-500" },
+                    u.lastSeen?.toMillis ? new Date(u.lastSeen.toMillis()).toLocaleTimeString() : ""
+                  )
+                ))
+            )
+          ) : null
+        ),
 
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!ui.msg.trim()) return;
-                  const m = ui.msg;
-                  setUi((p) => ({ ...p, msg: "" }));
+        // Body
+        h("div", { className: "flex-1 flex relative" },
 
-                  await col("artifacts", roomInfo.id, "public", "data", "messages").add({
-                    text: m,
-                    userId: user.uid,
-                    userName: roomInfo.nickname,
-                    timestamp: serverTimestamp()
-                  });
+          // Canvas area
+          h("div", { ref: containerRef, className: "flex-1 relative overflow-hidden bg-[radial-gradient(#1f2937_1px,transparent_1px)] [background-size:24px_24px]" },
 
-                  docRef("artifacts", LOBBY_ID, "public", "data", "active_rooms", roomInfo.id).set(
-                    { lastActivity: serverTimestamp() },
-                    { merge: true }
-                  );
-                }}
-                className="p-4 bg-gray-900 border-t border-gray-800 flex gap-2"
-              >
-                <input
-                  type="text"
-                  value={ui.msg}
-                  onChange={(e) => setUi((p) => ({ ...p, msg: e.target.value }))}
-                  placeholder="채팅 입력..."
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500"
-                />
-                <button
-                  type="submit"
-                  disabled={!ui.msg.trim()}
-                  className="p-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl transition disabled:opacity-50"
-                >
-                  <Icons.Send />
-                </button>
-              </form>
-            </div>
-          </div>
-        </div>
+            h("canvas", {
+              ref: canvasRef,
+              className: "block w-full h-full",
+              onMouseDown: (e) => { e.preventDefault(); drawStart(e); },
+              onMouseMove: (e) => { e.preventDefault(); drawMove(e); },
+              onMouseUp:   (e) => { e.preventDefault(); drawEnd(); },
+              onMouseLeave:(e) => { e.preventDefault(); drawEnd(); },
+              onTouchStart:(e) => { e.preventDefault(); drawStart(e); },
+              onTouchMove: (e) => { e.preventDefault(); drawMove(e); },
+              onTouchEnd:  (e) => { e.preventDefault(); drawEnd(); }
+            }),
+
+            // Text overlay input
+            textInput.active ? h("input", {
+              ref: textRef,
+              type: "text",
+              className: "text-input-overlay",
+              style: {
+                left: `${textInput.rawX}px`,
+                top:  `${Math.max(0, textInput.rawY - (ui.width * 2))}px`,
+                color: ui.color,
+                fontSize: `${Math.max(14, ui.width * 4)}px`,
+                minWidth: "140px"
+              },
+              value: textInput.value,
+              onChange: (e) => setTextInput(p => ({ ...p, value: e.target.value })),
+              onBlur: submitText,
+              onKeyDown: (e) => { if (e.key === "Enter") submitText(); },
+              autoFocus: true
+            }) : null,
+
+            // Bottom toolbar
+            h("div", { className: "absolute bottom-8 left-1/2 -translate-x-1/2 glass-panel border border-gray-700 px-6 py-3 rounded-3xl flex items-center gap-6 shadow-2xl" },
+
+              // tools
+              h("div", { className: "flex gap-2 p-1 bg-gray-900/50 rounded-xl" },
+                h("button", {
+                  onClick: () => setUi(p => ({ ...p, tool: "pencil" })),
+                  disabled: !canEdit,
+                  className:
+                    "p-2 rounded-lg transition " +
+                    (ui.tool === "pencil" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white") +
+                    (!canEdit ? " opacity-40 cursor-not-allowed" : "")
+                }, "✏️"),
+                h("button", {
+                  onClick: () => setUi(p => ({ ...p, tool: "text" })),
+                  disabled: !canEdit,
+                  className:
+                    "p-2 rounded-lg transition " +
+                    (ui.tool === "text" ? "bg-emerald-500 text-white" : "text-gray-400 hover:text-white") +
+                    (!canEdit ? " opacity-40 cursor-not-allowed" : "")
+                }, "T")
+              ),
+
+              // colors
+              h("div", { className: "flex gap-3" },
+                ["#10b981", "#ef4444", "#3b82f6", "#ffffff"].map(c =>
+                  h("button", {
+                    key: c,
+                    onClick: () => setUi(p => ({ ...p, color: c })),
+                    disabled: !canEdit,
+                    className:
+                      "w-6 h-6 rounded-full border-2 transition " +
+                      (ui.color === c ? "border-white scale-110 ring-4 ring-white/10" : "border-transparent opacity-60") +
+                      (!canEdit ? " opacity-40 cursor-not-allowed" : ""),
+                    style: { backgroundColor: c }
+                  })
+                )
+              ),
+
+              // width
+              h("div", { className: "flex items-center gap-2" },
+                h("span", { className: "text-[10px] text-gray-400 font-mono" }, "W"),
+                h("input", {
+                  type: "range",
+                  min: 2,
+                  max: 10,
+                  value: ui.width,
+                  disabled: !canEdit,
+                  onChange: (e) => setUi(p => ({ ...p, width: parseInt(e.target.value, 10) })),
+                })
+              ),
+
+              // notice
+              !canEdit ? h("div", { className: "text-[11px] text-gray-400" }, "현재 모드: 뷰 전용 (방장만 편집 가능)") : null
+            )
+          ),
+
+          // Chat
+          h("div", {
+            className:
+              "transition-all duration-300 " +
+              (ui.showChat ? "w-80 border-l border-gray-800" : "w-0 overflow-hidden") +
+              " flex flex-col glass-panel"
+          },
+            h("div", { className: "flex-1 overflow-y-auto p-4 space-y-4" },
+              data.messages.map((m, i) =>
+                h("div", {
+                  key: m.id || i,
+                  className: "flex flex-col " + (m.userId === user?.uid ? "items-end" : "items-start")
+                },
+                  h("span", { className: "text-[10px] text-gray-500 mb-1 px-1 font-mono uppercase tracking-tighter" }, m.userName || "User"),
+                  h("div", {
+                    className:
+                      "max-w-[90%] px-3 py-2 text-sm rounded-2xl shadow-sm " +
+                      (m.userId === user?.uid
+                        ? "bg-emerald-600 text-white rounded-tr-none"
+                        : "bg-gray-800 text-gray-200 rounded-tl-none border border-gray-700/50")
+                  }, m.text || "")
+                )
+              )
+            ),
+
+            h("form", {
+              onSubmit: sendChat,
+              className: "p-4 bg-gray-900 border-t border-gray-800 flex gap-2"
+            },
+              h("input", {
+                type: "text",
+                value: ui.msg,
+                onChange: (e) => setUi(p => ({ ...p, msg: e.target.value })),
+                placeholder: "채팅 입력...",
+                className: "flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500"
+              }),
+              h("button", {
+                type: "submit",
+                disabled: !(ui.msg || "").trim(),
+                className: "p-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl transition disabled:opacity-50"
+              }, "➤")
+            )
+          )
+        )
       );
-    };
+    }
 
+    // Mount
     const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<App />);
+    root.render(h(App));
   </script>
 </body>
 </html>
